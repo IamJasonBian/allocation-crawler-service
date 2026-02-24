@@ -1,0 +1,20 @@
+{
+  "name": "allocation-crawler-service",
+  "version": "1.0.0",
+  "type": "module",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "scripts": {
+    "dev": "netlify dev",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@netlify/functions": "^3.0.0",
+    "ioredis": "^5.4.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.4.0"
+  }
+}
