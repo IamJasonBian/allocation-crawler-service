@@ -7,7 +7,7 @@ import { upsertUser, getUser, listUsers } from "../../src/lib/entities.js";
  *
  * GET          - List all users
  * GET  ?id=    - Get single user
- * POST { id, resumes, answers } - Create or update a user
+ * POST { id, resumes, answers, tags } - Create or update a user
  */
 export default async (req: Request) => {
   const r = getRedis();
@@ -33,7 +33,8 @@ export default async (req: Request) => {
         r,
         body.id,
         body.resumes || [],
-        body.answers || {}
+        body.answers || {},
+        body.tags || []
       );
       return json(user, 201);
     }

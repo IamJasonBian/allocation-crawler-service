@@ -7,6 +7,7 @@ import {
   updateJobStatus,
   getJob,
   listJobs,
+  listJobsForUser,
   createRun,
   updateRun,
   listRuns,
@@ -44,6 +45,7 @@ export default async (req: Request) => {
 
       const board = url.searchParams.get("board") || undefined;
       const status = url.searchParams.get("status") || undefined;
+      const tag = url.searchParams.get("tag") || undefined;
       const id = url.searchParams.get("id");
 
       if (board && id) {
@@ -52,7 +54,7 @@ export default async (req: Request) => {
         return json(job);
       }
 
-      const jobs = await listJobs(r, { board, status });
+      const jobs = await listJobs(r, { board, status, tag });
       return json({ count: jobs.length, jobs });
     }
 
@@ -197,7 +199,10 @@ async function handleAction(r: any, body: any) {
   }
 
   if (action === "retrieve") {
-    const jobs = await listJobs(r, { board: body.board, status: body.status || "discovered" });
+    // If user is specified, filter jobs by user's interest tags
+    const jobs = body.user
+      ? await listJobsForUser(r, body.user, { board: body.board, status: body.status || "discovered" })
+      : await listJobs(r, { board: body.board, status: body.status || "discovered" });
     return json({
       count: jobs.length,
       jobs: jobs.map((j) => ({
@@ -207,6 +212,7 @@ async function handleAction(r: any, body: any) {
         url: j.url,
         location: j.location,
         department: j.department,
+        tags: j.tags,
         status: j.status,
       })),
     });

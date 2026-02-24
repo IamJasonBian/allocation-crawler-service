@@ -13,6 +13,7 @@ export interface Job {
   url: string;
   location: string;
   department: string;
+  tags: string[];       // auto-extracted from title+department
   status: "discovered" | "queued" | "applied" | "found" | "rejected" | "expired";
   discovered_at: string;
   updated_at: string;
@@ -33,5 +34,6 @@ export interface User {
   id: string;
   resumes: string[];    // list of resume variant IDs or paths
   answers: Record<string, string>; // question key → answer
+  tags: string[];       // interest tags (e.g. ["quant", "ml", "senior"])
   updated_at: string;
 }
