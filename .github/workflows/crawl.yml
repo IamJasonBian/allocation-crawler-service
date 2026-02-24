@@ -1,0 +1,26 @@
+name: Crawl Jobs
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"  # Every 6 hours
+  workflow_dispatch: {}     # Manual trigger
+
+jobs:
+  crawl:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Seed boards
+        run: node scripts/test-crawl.mjs --seed
+        env:
+          API_URL: ${{ secrets.API_URL }}
+
+      - name: Crawl and push jobs
+        run: node scripts/test-crawl.mjs --push
+        env:
+          API_URL: ${{ secrets.API_URL }}

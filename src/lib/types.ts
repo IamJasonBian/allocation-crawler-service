@@ -3,6 +3,7 @@
 export interface Board {
   id: string;           // slug identifier (e.g. "stripe", "notion")
   company: string;      // display name
+  ats: string;          // ATS platform: "greenhouse" | "lever" | "ashby"
   created_at: string;   // ISO timestamp
 }
 
