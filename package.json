@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@netlify/blobs": "^10.7.0",
     "@netlify/functions": "^3.0.0",
     "ioredis": "^5.4.0"
   },
