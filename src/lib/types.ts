@@ -13,9 +13,18 @@ export interface Job {
   url: string;
   location: string;
   department: string;
+  tags: string[];       // auto-extracted from title+department
   status: "discovered" | "queued" | "applied" | "found" | "rejected" | "expired";
   discovered_at: string;
   updated_at: string;
+}
+
+export interface RunArtifacts {
+  resume_url?: string;                // which resume file/variant was used
+  cover_letter?: string;              // generated cover letter text
+  answers?: Record<string, string>;   // form field answers submitted
+  confirmation_url?: string;          // confirmation page URL after submit
+  notes?: string;                     // agent notes or human notes
 }
 
 export interface JobRun {
@@ -27,11 +36,13 @@ export interface JobRun {
   started_at: string;
   completed_at: string | null;
   error: string | null;
+  artifacts: RunArtifacts | null;
 }
 
 export interface User {
   id: string;
   resumes: string[];    // list of resume variant IDs or paths
   answers: Record<string, string>; // question key → answer
+  tags: string[];       // interest tags (e.g. ["quant", "ml", "senior"])
   updated_at: string;
 }
