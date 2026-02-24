@@ -2,6 +2,16 @@ import type Redis from "ioredis";
 import type { Board, Job, JobRun, User } from "./types.js";
 import { extractTags } from "./tags.js";
 
+/* ── Pipeline helper ── */
+async function execPipe(pipe: ReturnType<Redis["pipeline"]>) {
+  const results = await pipe.exec();
+  if (results) {
+    for (const [err] of results) {
+      if (err) throw err;
+    }
+  }
+}
+
 /* ── Key helpers ── */
 const K = {
   board: (id: string) => `board:${id}`,
@@ -24,7 +34,7 @@ export async function addBoard(r: Redis, id: string, company: string): Promise<B
   const pipe = r.pipeline();
   pipe.hset(K.board(id), { id, company, created_at: board.created_at });
   pipe.sadd(K.boardsIdx(), id);
-  await pipe.exec();
+  await execPipe(pipe);
   return board;
 }
 
@@ -48,7 +58,7 @@ export async function removeBoard(r: Redis, id: string): Promise<boolean> {
   pipe.del(K.boardJobsIdx(id));
   pipe.del(K.board(id));
   pipe.srem(K.boardsIdx(), id);
-  await pipe.exec();
+  await execPipe(pipe);
   return true;
 }
 
@@ -94,7 +104,7 @@ export async function addJob(r: Redis, job: Omit<Job, "discovered_at" | "updated
   for (const tag of tags) {
     pipe.sadd(K.tagIdx(tag), ck);
   }
-  await pipe.exec();
+  await execPipe(pipe);
   return full;
 }
 
@@ -127,7 +137,7 @@ export async function addJobsBulk(r: Redis, jobs: Omit<Job, "discovered_at" | "u
     results.push(full);
   }
 
-  await pipe.exec();
+  await execPipe(pipe);
   return results;
 }
 
@@ -146,7 +156,7 @@ export async function removeJob(r: Redis, board: string, jobId: string): Promise
   }
   pipe.srem(K.boardJobsIdx(board), jobId);
   pipe.del(key);
-  await pipe.exec();
+  await execPipe(pipe);
   return true;
 }
 
@@ -167,7 +177,7 @@ export async function updateJobStatus(
   pipe.hset(key, { status: newStatus, updated_at: now });
   if (oldStatus) pipe.srem(K.jobStatusIdx(oldStatus), ck);
   pipe.sadd(K.jobStatusIdx(newStatus), ck);
-  await pipe.exec();
+  await execPipe(pipe);
 
   return {
     ...(data as unknown as Job),
@@ -300,7 +310,7 @@ export async function createRun(r: Redis, run: Omit<JobRun, "started_at" | "comp
   });
   pipe.sadd(K.jobRunsIdx(run.job_id), run.run_id);
   pipe.sadd(K.runsAll(), run.run_id);
-  await pipe.exec();
+  await execPipe(pipe);
   return full;
 }
 
@@ -361,7 +371,7 @@ export async function upsertUser(r: Redis, id: string, resumes: string[], answer
     updated_at: now,
   });
   pipe.sadd(K.usersIdx(), id);
-  await pipe.exec();
+  await execPipe(pipe);
   return { id, resumes, answers, tags, updated_at: now };
 }
 
