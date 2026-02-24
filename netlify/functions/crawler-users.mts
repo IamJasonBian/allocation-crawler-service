@@ -44,7 +44,7 @@ export default async (req: Request) => {
     console.error("crawler-users error:", error);
     return json({ error: error.message }, 500);
   } finally {
-    await disconnectRedis();
+    await disconnectRedis(r);
   }
 };
 

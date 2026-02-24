@@ -1,5 +1,5 @@
 import type Redis from "ioredis";
-import type { Board, Job, JobRun, User } from "./types.js";
+import type { Board, Job, JobRun, RunArtifacts, User } from "./types.js";
 import { extractTags } from "./tags.js";
 
 /* ── Pipeline helper ── */
@@ -23,6 +23,7 @@ const K = {
   run: (runId: string) => `run:${runId}`,
   jobRunsIdx: (jobId: string) => `idx:job_runs:${jobId}`,
   runsAll: () => "idx:runs",
+  applyLock: (board: string, jobId: string) => `lock:apply:${board}:${jobId}`,
   user: (id: string) => `user:${id}`,
   usersIdx: () => "idx:users",
 };
@@ -294,9 +295,54 @@ export async function listJobsForUser(r: Redis, userId: string, opts?: { board?:
 
 /* ══════════════════════ JobRuns ══════════════════════ */
 
-export async function createRun(r: Redis, run: Omit<JobRun, "started_at" | "completed_at" | "error" | "status">): Promise<JobRun> {
+const LOCK_TTL_SECONDS = 300; // 5 min — auto-expire if agent crashes
+const APPLICABLE_STATUSES = new Set<Job["status"]>(["discovered", "queued"]);
+
+/**
+ * Create a run with SETNX-based locking to prevent duplicate applications.
+ *
+ * Flow:
+ *   1. SETNX lock:apply:{board}:{job_id} → fail? return { error, code: 409 }
+ *   2. Verify job exists and is in an applicable status
+ *   3. Create the run hash + index entries
+ *   4. Transition job from "discovered" → "queued"
+ *
+ * @returns { run } on success, or { error, code } on conflict/bad state
+ */
+export async function createRun(
+  r: Redis,
+  run: Omit<JobRun, "started_at" | "completed_at" | "error" | "status" | "artifacts">,
+  artifacts?: RunArtifacts,
+): Promise<{ run: JobRun } | { error: string; code: number }> {
+  const lockKey = K.applyLock(run.board, run.job_id);
+
+  // 1. Atomic lock — only one agent can claim this job
+  const locked = await r.set(lockKey, run.run_id, "EX", LOCK_TTL_SECONDS, "NX");
+  if (!locked) {
+    return { error: "Job already has an active application in progress", code: 409 };
+  }
+
+  // 2. Check job status
+  const job = await getJob(r, run.board, run.job_id);
+  if (!job) {
+    await r.del(lockKey);
+    return { error: "Job not found", code: 404 };
+  }
+  if (!APPLICABLE_STATUSES.has(job.status)) {
+    await r.del(lockKey);
+    return { error: `Job is in '${job.status}' status — only discovered/queued jobs can be applied to`, code: 400 };
+  }
+
+  // 3. Create the run
   const now = new Date().toISOString();
-  const full: JobRun = { ...run, status: "pending", started_at: now, completed_at: null, error: null };
+  const full: JobRun = {
+    ...run,
+    status: "pending",
+    started_at: now,
+    completed_at: null,
+    error: null,
+    artifacts: artifacts || null,
+  };
   const pipe = r.pipeline();
   pipe.hset(K.run(run.run_id), {
     run_id: full.run_id,
@@ -307,17 +353,30 @@ export async function createRun(r: Redis, run: Omit<JobRun, "started_at" | "comp
     started_at: full.started_at,
     completed_at: "",
     error: "",
+    artifacts: JSON.stringify(full.artifacts),
   });
   pipe.sadd(K.jobRunsIdx(run.job_id), run.run_id);
   pipe.sadd(K.runsAll(), run.run_id);
   await execPipe(pipe);
-  return full;
+
+  // 4. Transition job to "queued" if it was "discovered"
+  if (job.status === "discovered") {
+    await updateJobStatus(r, run.board, run.job_id, "queued");
+  }
+
+  return { run: full };
 }
 
+/**
+ * Update a run's status and optionally merge artifacts.
+ *
+ * On success: job → "applied", lock deleted.
+ * On failure (no other active runs): job → "discovered", lock deleted.
+ */
 export async function updateRun(
   r: Redis,
   runId: string,
-  update: { status: JobRun["status"]; error?: string }
+  update: { status: JobRun["status"]; error?: string; artifacts?: RunArtifacts }
 ): Promise<JobRun | null> {
   const key = K.run(runId);
   const data = await r.hgetall(key);
@@ -330,12 +389,54 @@ export async function updateRun(
   }
   if (update.error) fields.error = update.error;
 
+  // Merge artifacts — append new fields to existing
+  if (update.artifacts) {
+    const existing: RunArtifacts = data.artifacts ? JSON.parse(data.artifacts) : {};
+    const merged = { ...existing, ...update.artifacts };
+    if (update.artifacts.answers && existing.answers) {
+      merged.answers = { ...existing.answers, ...update.artifacts.answers };
+    }
+    fields.artifacts = JSON.stringify(merged);
+  }
+
   await r.hset(key, fields);
+
+  const board = data.board;
+  const jobId = data.job_id;
+  const lockKey = K.applyLock(board, jobId);
+
+  // Auto-transition job status based on run outcome
+  if (update.status === "success") {
+    await updateJobStatus(r, board, jobId, "applied");
+    await r.del(lockKey);
+  } else if (update.status === "failed") {
+    // Check if any other active runs exist for this job
+    const siblingRuns = await listRuns(r, jobId);
+    const hasActiveRun = siblingRuns.some(
+      (sr) => sr.run_id !== runId && (sr.status === "pending" || sr.status === "submitted")
+    );
+    if (!hasActiveRun) {
+      await updateJobStatus(r, board, jobId, "discovered");
+    }
+    await r.del(lockKey);
+  }
+
   const updated = await r.hgetall(key);
+  return parseRunHash(updated);
+}
+
+function parseRunHash(data: Record<string, string>): JobRun | null {
+  if (!data.run_id) return null;
   return {
-    ...(updated as unknown as JobRun),
-    completed_at: updated.completed_at || null,
-    error: updated.error || null,
+    run_id: data.run_id,
+    job_id: data.job_id,
+    board: data.board,
+    variant_id: data.variant_id,
+    status: data.status as JobRun["status"],
+    started_at: data.started_at,
+    completed_at: data.completed_at || null,
+    error: data.error || null,
+    artifacts: data.artifacts ? JSON.parse(data.artifacts) : null,
   };
 }
 
@@ -347,12 +448,7 @@ export async function listRuns(r: Redis, jobId?: string): Promise<JobRun[]> {
   const runs = await Promise.all(
     runIds.map(async (rid) => {
       const data = await r.hgetall(K.run(rid));
-      if (!data.run_id) return null;
-      return {
-        ...(data as unknown as JobRun),
-        completed_at: data.completed_at || null,
-        error: data.error || null,
-      };
+      return parseRunHash(data);
     })
   );
   return runs.filter((r): r is JobRun => r !== null);

@@ -19,6 +19,14 @@ export interface Job {
   updated_at: string;
 }
 
+export interface RunArtifacts {
+  resume_url?: string;                // which resume file/variant was used
+  cover_letter?: string;              // generated cover letter text
+  answers?: Record<string, string>;   // form field answers submitted
+  confirmation_url?: string;          // confirmation page URL after submit
+  notes?: string;                     // agent notes or human notes
+}
+
 export interface JobRun {
   run_id: string;
   job_id: string;
@@ -28,6 +36,7 @@ export interface JobRun {
   started_at: string;
   completed_at: string | null;
   error: string | null;
+  artifacts: RunArtifacts | null;
 }
 
 export interface User {

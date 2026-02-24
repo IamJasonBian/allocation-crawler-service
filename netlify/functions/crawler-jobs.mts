@@ -63,7 +63,7 @@ export default async (req: Request) => {
       const body = await req.json();
 
       if (body.action) {
-        return handleAction(r, body);
+        return await handleAction(r, body);
       }
 
       if (Array.isArray(body.jobs)) {
@@ -95,7 +95,7 @@ export default async (req: Request) => {
         if (!validRunStatuses.includes(body.status)) {
           return json({ error: `run status must be one of: ${validRunStatuses.join(", ")}` }, 400);
         }
-        const updated = await updateRun(r, body.run_id, { status: body.status, error: body.error });
+        const updated = await updateRun(r, body.run_id, { status: body.status, error: body.error, artifacts: body.artifacts });
         if (!updated) return json({ error: "Run not found" }, 404);
         return json(updated);
       }
@@ -128,7 +128,7 @@ export default async (req: Request) => {
     console.error("crawler-jobs error:", error);
     return json({ error: error.message }, 500);
   } finally {
-    await disconnectRedis();
+    await disconnectRedis(r);
   }
 };
 
@@ -141,13 +141,20 @@ async function handleAction(r: any, body: any) {
     if (!body.run_id || !body.job_id || !body.board || !body.variant_id) {
       return json({ error: "run_id, job_id, board, and variant_id are required" }, 400);
     }
-    const run = await createRun(r, {
-      run_id: body.run_id,
-      job_id: body.job_id,
-      board: body.board,
-      variant_id: body.variant_id,
-    });
-    return json(run, 201);
+    const result = await createRun(
+      r,
+      {
+        run_id: body.run_id,
+        job_id: body.job_id,
+        board: body.board,
+        variant_id: body.variant_id,
+      },
+      body.artifacts,
+    );
+    if ("error" in result) {
+      return json({ error: result.error }, result.code);
+    }
+    return json(result.run, 201);
   }
 
   if (action === "notify") {
