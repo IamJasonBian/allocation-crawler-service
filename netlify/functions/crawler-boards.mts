@@ -29,10 +29,14 @@ export default async (req: Request) => {
 
     if (req.method === "POST") {
       const body = await req.json();
-      if (!body.id || !body.company) {
-        return json({ error: "id and company are required" }, 400);
+      if (!body.id || !body.company || !body.ats) {
+        return json({ error: "id, company, and ats are required" }, 400);
       }
-      const board = await addBoard(r, body.id, body.company);
+      const VALID_ATS = ["greenhouse", "lever", "ashby"];
+      if (!VALID_ATS.includes(body.ats)) {
+        return json({ error: `ats must be one of: ${VALID_ATS.join(", ")}` }, 400);
+      }
+      const board = await addBoard(r, body.id, body.company, body.ats);
       return json(board, 201);
     }
 

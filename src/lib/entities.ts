@@ -30,10 +30,10 @@ const K = {
 
 /* ══════════════════════ Boards ══════════════════════ */
 
-export async function addBoard(r: Redis, id: string, company: string): Promise<Board> {
-  const board: Board = { id, company, created_at: new Date().toISOString() };
+export async function addBoard(r: Redis, id: string, company: string, ats: string): Promise<Board> {
+  const board: Board = { id, company, ats, created_at: new Date().toISOString() };
   const pipe = r.pipeline();
-  pipe.hset(K.board(id), { id, company, created_at: board.created_at });
+  pipe.hset(K.board(id), { id, company, ats, created_at: board.created_at });
   pipe.sadd(K.boardsIdx(), id);
   await execPipe(pipe);
   return board;
@@ -110,11 +110,20 @@ export async function addJob(r: Redis, job: Omit<Job, "discovered_at" | "updated
 }
 
 export async function addJobsBulk(r: Redis, jobs: Omit<Job, "discovered_at" | "updated_at" | "status" | "tags">[]): Promise<Job[]> {
+  if (jobs.length === 0) return [];
+
+  // Check which jobs already exist — skip them to avoid resetting status
+  const existChecks = await Promise.all(
+    jobs.map((j) => r.exists(K.job(j.board, j.job_id)))
+  );
+  const newJobs = jobs.filter((_, i) => !existChecks[i]);
+  if (newJobs.length === 0) return [];
+
   const now = new Date().toISOString();
   const results: Job[] = [];
   const pipe = r.pipeline();
 
-  for (const job of jobs) {
+  for (const job of newJobs) {
     const tags = extractTags(job.title, job.department);
     const full: Job = { ...job, tags, status: "discovered", discovered_at: now, updated_at: now };
     const ck = `${job.board}:${job.job_id}`;

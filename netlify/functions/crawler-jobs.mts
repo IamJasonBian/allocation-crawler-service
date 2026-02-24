@@ -8,10 +8,12 @@ import {
   getJob,
   listJobs,
   listJobsForUser,
+  listBoards,
   createRun,
   updateRun,
   listRuns,
 } from "../../src/lib/entities.js";
+import { crawlBoard } from "../../src/lib/fetchers.js";
 import type { Job, JobRun } from "../../src/lib/types.js";
 
 /**
@@ -25,6 +27,7 @@ import type { Job, JobRun } from "../../src/lib/types.js";
  * POST  { action: "notify", ... }  - Send Slack digest of discovered jobs
  * POST  { action: "cleanup", ... } - Remove processed jobs
  * POST  { action: "retrieve", ...} - Retrieve job_ids for allocation-agent
+ * POST  { action: "crawl" }       - Crawl all registered boards and ingest jobs
  * PATCH { board, job_id, status }  - Update job status
  * PATCH { run_id, status }         - Update run status
  * DELETE { board, job_id }         - Remove a job
@@ -225,7 +228,32 @@ async function handleAction(r: any, body: any) {
     });
   }
 
-  return json({ error: "action must be one of: run, notify, cleanup, retrieve" }, 400);
+  if (action === "crawl") {
+    const boards = await listBoards(r);
+    const summary: Record<string, number> = {};
+    let totalNew = 0;
+
+    for (const board of boards) {
+      if (!board.ats) continue;
+      try {
+        const raw = await crawlBoard(board.id, board.ats);
+        if (raw.length > 0) {
+          const inserted = await addJobsBulk(r, raw.map((j) => ({ ...j, board: board.id })));
+          summary[board.id] = inserted.length;
+          totalNew += inserted.length;
+        } else {
+          summary[board.id] = 0;
+        }
+      } catch (err: any) {
+        console.error(`crawl ${board.id} failed:`, err.message);
+        summary[board.id] = -1;
+      }
+    }
+
+    return json({ message: "Crawl complete", total_new: totalNew, boards: summary });
+  }
+
+  return json({ error: "action must be one of: run, notify, cleanup, retrieve, crawl" }, 400);
 }
 
 function json(data: unknown, status = 200) {

@@ -5,18 +5,19 @@
  * Usage:
  *   node scripts/test-crawl.mjs                       # fetch only (dry run)
  *   node scripts/test-crawl.mjs --push                # fetch + POST to API
+ *   node scripts/test-crawl.mjs --seed                # register boards from config/boards.json
  *   API_URL=http://localhost:8888 node scripts/test-crawl.mjs --push
  */
 
+import { readFileSync } from "fs";
+import { resolve, dirname } from "path";
+import { fileURLToPath } from "url";
+
 const API_URL = process.env.API_URL || "https://allocation-crawler-service.netlify.app";
 const PUSH = process.argv.includes("--push");
+const SEED = process.argv.includes("--seed");
 
-/* ── Board definitions (subset for testing) ── */
-const BOARDS = [
-  { token: "vercel",   name: "Vercel",   ats: "greenhouse" },
-  { token: "coinbase",  name: "Coinbase",  ats: "greenhouse" },
-  { token: "ramp",     name: "Ramp",     ats: "ashby" },
-];
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 /* ── ATS fetchers ── */
 
@@ -88,23 +89,64 @@ async function apiGet(path) {
   return { status: res.status, data: await res.json() };
 }
 
+/* ── Seed boards from config ── */
+
+async function seedBoards() {
+  const configPath = resolve(__dirname, "../config/boards.json");
+  const boards = JSON.parse(readFileSync(configPath, "utf-8"));
+  console.log(`\nSeeding ${boards.length} boards to ${API_URL}...\n`);
+
+  for (const board of boards) {
+    const { status, data } = await apiPost("/api/crawler/boards", board);
+    console.log(`  ${board.id} (${board.ats}): ${status} — ${data.id || data.error}`);
+  }
+  console.log("\nDone!\n");
+}
+
+/* ── Fetch boards from API ── */
+
+async function getBoardsFromAPI() {
+  const { status, data } = await apiGet("/api/crawler/boards");
+  if (status !== 200 || !data.boards) {
+    console.error(`Failed to fetch boards: ${status}`);
+    return [];
+  }
+  return data.boards.filter((b) => b.ats);
+}
+
 /* ── Main ── */
 
 async function main() {
-  console.log(`\n🔍 Crawling ${BOARDS.length} boards...\n`);
+  if (SEED) {
+    await seedBoards();
+    return;
+  }
+
+  // Read boards from API
+  const boards = await getBoardsFromAPI();
+  if (boards.length === 0) {
+    console.log("No boards registered. Run with --seed first to register boards from config/boards.json.");
+    return;
+  }
+
+  console.log(`\nCrawling ${boards.length} boards...\n`);
 
   const allJobs = [];
 
-  for (const board of BOARDS) {
-    process.stdout.write(`  ${board.name} (${board.ats})... `);
+  for (const board of boards) {
+    process.stdout.write(`  ${board.company || board.id} (${board.ats})... `);
     try {
-      const jobs = await fetchers[board.ats](board.token);
+      const fetcher = fetchers[board.ats];
+      if (!fetcher) {
+        console.log(`SKIP (unknown ats: ${board.ats})`);
+        continue;
+      }
+      const jobs = await fetcher(board.id);
       console.log(`${jobs.length} jobs`);
       allJobs.push({ board, jobs });
 
-      // Show first 3 jobs
       for (const j of jobs.slice(0, 3)) {
-        console.log(`    • ${j.title} — ${j.location} / ${j.department}`);
+        console.log(`    - ${j.title} — ${j.location} / ${j.department}`);
       }
       if (jobs.length > 3) console.log(`    ... and ${jobs.length - 3} more`);
     } catch (err) {
@@ -113,7 +155,7 @@ async function main() {
   }
 
   const totalJobs = allJobs.reduce((s, b) => s + b.jobs.length, 0);
-  console.log(`\n📊 Total: ${totalJobs} jobs from ${allJobs.length} boards\n`);
+  console.log(`\nTotal: ${totalJobs} jobs from ${allJobs.length} boards\n`);
 
   if (!PUSH) {
     console.log("Dry run — pass --push to POST jobs to the crawler API.\n");
@@ -121,26 +163,16 @@ async function main() {
   }
 
   /* ── Push to API ── */
-  console.log(`📤 Pushing to ${API_URL}...\n`);
+  console.log(`Pushing to ${API_URL}...\n`);
 
-  // 1. Register boards
-  for (const { board } of allJobs) {
-    const { status, data } = await apiPost("/api/crawler/boards", {
-      id: board.token,
-      company: board.name,
-    });
-    console.log(`  Board ${board.token}: ${status} — ${data.id || data.error}`);
-  }
-
-  // 2. Bulk-add jobs (limit to 20 per board for testing)
   for (const { board, jobs } of allJobs) {
-    const batch = jobs.slice(0, 20).map((j) => ({ ...j, board: board.token }));
+    const batch = jobs.map((j) => ({ ...j, board: board.id }));
     const { status, data } = await apiPost("/api/crawler/jobs", { jobs: batch });
-    console.log(`  Jobs ${board.token}: ${status} — ${data.count ?? data.error} jobs added`);
+    console.log(`  ${board.id}: ${status} — ${data.count ?? data.error} new jobs added`);
   }
 
-  // 3. Verify via GET
-  console.log("\n📋 Verification:\n");
+  // Verify
+  console.log("\nVerification:\n");
   const { data: boardsData } = await apiGet("/api/crawler/boards");
   console.log(`  Boards: ${boardsData.count ?? boardsData.error}`);
 
@@ -148,15 +180,11 @@ async function main() {
   console.log(`  Total jobs: ${jobsData.count ?? jobsData.error}`);
 
   for (const { board } of allJobs) {
-    const { data } = await apiGet(`/api/crawler/jobs?board=${board.token}`);
-    console.log(`  ${board.token}: ${data.count ?? data.error} jobs`);
+    const { data } = await apiGet(`/api/crawler/jobs?board=${board.id}`);
+    console.log(`  ${board.id}: ${data.count ?? data.error} jobs`);
   }
 
-  // 4. Test tag filtering
-  const { data: quantJobs } = await apiGet("/api/crawler/jobs?tag=engineering");
-  console.log(`  Tagged 'engineering': ${quantJobs.count ?? quantJobs.error} jobs`);
-
-  console.log("\n✅ Done!\n");
+  console.log("\nDone!\n");
 }
 
 main().catch((err) => {
