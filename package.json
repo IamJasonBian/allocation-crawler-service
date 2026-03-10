@@ -12,7 +12,9 @@
   "dependencies": {
     "@netlify/blobs": "^10.7.0",
     "@netlify/functions": "^3.0.0",
-    "ioredis": "^5.4.0"
+    "@sparticuz/chromium": "^143.0.4",
+    "ioredis": "^5.4.0",
+    "puppeteer-core": "^24.38.0"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
