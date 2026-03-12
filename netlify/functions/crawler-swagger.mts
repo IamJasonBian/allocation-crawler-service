@@ -194,6 +194,53 @@ const spec = {
         },
       },
     },
+    "/crawls": {
+      get: {
+        summary: "List crawls",
+        parameters: [
+          { name: "id", in: "query", schema: { type: "string" }, description: "Get a single crawl by ID" },
+        ],
+        responses: {
+          "200": { description: "Crawl(s) returned", content: { "application/json": { schema: { $ref: "#/components/schemas/CrawlList" } } } },
+          "404": { description: "Crawl not found" },
+        },
+      },
+      post: {
+        summary: "Create a new crawl",
+        requestBody: {
+          required: true,
+          content: { "application/json": { schema: { $ref: "#/components/schemas/CrawlInput" } } },
+        },
+        responses: {
+          "201": { description: "Crawl created", content: { "application/json": { schema: { $ref: "#/components/schemas/Crawl" } } } },
+          "400": { description: "Missing or invalid trigger" },
+        },
+      },
+      patch: {
+        summary: "Update a crawl",
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["crawl_id"],
+                properties: {
+                  crawl_id: { type: "string" },
+                  status: { type: "string", enum: ["pending", "running", "success", "failed"] },
+                  error: { type: "string", nullable: true },
+                  stats: { $ref: "#/components/schemas/CrawlStats" },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          "200": { description: "Crawl updated", content: { "application/json": { schema: { $ref: "#/components/schemas/Crawl" } } } },
+          "404": { description: "Crawl not found" },
+        },
+      },
+    },
   },
   components: {
     schemas: {
@@ -282,6 +329,43 @@ const spec = {
         properties: {
           count: { type: "integer" },
           users: { type: "array", items: { $ref: "#/components/schemas/User" } },
+        },
+      },
+      CrawlStats: {
+        type: "object",
+        properties: {
+          boards_crawled: { type: "integer" },
+          jobs_fetched: { type: "integer" },
+          jobs_new: { type: "integer" },
+          jobs_updated: { type: "integer" },
+          jobs_removed: { type: "integer" },
+        },
+      },
+      Crawl: {
+        type: "object",
+        properties: {
+          crawl_id: { type: "string" },
+          status: { type: "string", enum: ["pending", "running", "success", "failed"] },
+          trigger: { type: "string", enum: ["manual", "scheduled"] },
+          started_at: { type: "string", format: "date-time" },
+          completed_at: { type: "string", format: "date-time", nullable: true },
+          error: { type: "string", nullable: true },
+          stats: { $ref: "#/components/schemas/CrawlStats", nullable: true },
+        },
+      },
+      CrawlInput: {
+        type: "object",
+        required: ["trigger"],
+        properties: {
+          trigger: { type: "string", enum: ["manual", "scheduled"], example: "manual" },
+          crawl_id: { type: "string", description: "Optional custom ID; auto-generated if omitted" },
+        },
+      },
+      CrawlList: {
+        type: "object",
+        properties: {
+          count: { type: "integer" },
+          crawls: { type: "array", items: { $ref: "#/components/schemas/Crawl" } },
         },
       },
     },

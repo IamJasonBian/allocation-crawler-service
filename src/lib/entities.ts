@@ -1,5 +1,5 @@
 import type Redis from "ioredis";
-import type { Board, Job, JobRun, RunArtifacts, User } from "./types.js";
+import type { Board, Job, JobRun, RunArtifacts, User, Crawl, CrawlStats } from "./types.js";
 import { extractTags } from "./tags.js";
 
 /* ── Pipeline helper ── */
@@ -26,6 +26,8 @@ const K = {
   applyLock: (board: string, jobId: string) => `lock:apply:${board}:${jobId}`,
   user: (id: string) => `user:${id}`,
   usersIdx: () => "idx:users",
+  crawl: (crawlId: string) => `crawl_exec:${crawlId}`,
+  crawlsAll: () => "idx:crawls",
 };
 
 /* ══════════════════════ Boards ══════════════════════ */
@@ -496,4 +498,89 @@ export async function listUsers(r: Redis): Promise<User[]> {
   const ids = await r.smembers(K.usersIdx());
   const users = await Promise.all(ids.map((id) => getUser(r, id)));
   return users.filter((u): u is User => u !== null);
+}
+
+/* ══════════════════════ Crawls ══════════════════════ */
+
+export async function createCrawl(
+  r: Redis,
+  crawl_id: string,
+  trigger: Crawl["trigger"],
+): Promise<Crawl> {
+  const now = new Date().toISOString();
+  const crawl: Crawl = {
+    crawl_id,
+    status: "pending",
+    trigger,
+    started_at: now,
+    completed_at: null,
+    error: null,
+    stats: null,
+  };
+  const pipe = r.pipeline();
+  pipe.hset(K.crawl(crawl_id), {
+    crawl_id,
+    status: crawl.status,
+    trigger,
+    started_at: crawl.started_at,
+    completed_at: "",
+    error: "",
+    stats: "",
+  });
+  pipe.sadd(K.crawlsAll(), crawl_id);
+  await execPipe(pipe);
+  return crawl;
+}
+
+export async function updateCrawl(
+  r: Redis,
+  crawl_id: string,
+  update: { status?: Crawl["status"]; error?: string; stats?: CrawlStats },
+): Promise<Crawl | null> {
+  const key = K.crawl(crawl_id);
+  const data = await r.hgetall(key);
+  if (!data.crawl_id) return null;
+
+  const now = new Date().toISOString();
+  const fields: Record<string, string> = {};
+  if (update.status) {
+    fields.status = update.status;
+    if (update.status === "success" || update.status === "failed") {
+      fields.completed_at = now;
+    }
+  }
+  if (update.error !== undefined) fields.error = update.error;
+  if (update.stats) fields.stats = JSON.stringify(update.stats);
+
+  await r.hset(key, fields);
+
+  const updated = await r.hgetall(key);
+  return parseCrawlHash(updated);
+}
+
+export async function getCrawl(r: Redis, crawl_id: string): Promise<Crawl | null> {
+  const data = await r.hgetall(K.crawl(crawl_id));
+  return parseCrawlHash(data);
+}
+
+export async function listCrawls(r: Redis): Promise<Crawl[]> {
+  const ids = await r.smembers(K.crawlsAll());
+  const crawls = await Promise.all(ids.map((id) => getCrawl(r, id)));
+  const valid = crawls.filter((c): c is Crawl => c !== null);
+  // Sort by started_at descending
+  valid.sort((a, b) => (b.started_at > a.started_at ? 1 : b.started_at < a.started_at ? -1 : 0));
+  return valid;
+}
+
+function parseCrawlHash(data: Record<string, string>): Crawl | null {
+  if (!data.crawl_id) return null;
+  return {
+    crawl_id: data.crawl_id,
+    status: data.status as Crawl["status"],
+    trigger: data.trigger as Crawl["trigger"],
+    started_at: data.started_at,
+    completed_at: data.completed_at || null,
+    error: data.error || null,
+    stats: data.stats ? JSON.parse(data.stats) : null,
+  };
 }
