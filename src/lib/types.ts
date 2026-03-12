@@ -47,3 +47,21 @@ export interface User {
   tags: string[];       // interest tags (e.g. ["quant", "ml", "senior"])
   updated_at: string;
 }
+
+export interface CrawlStats {
+  boards_crawled: number;
+  jobs_fetched: number;
+  jobs_new: number;
+  jobs_updated: number;
+  jobs_removed: number;
+}
+
+export interface Crawl {
+  crawl_id: string;
+  status: "pending" | "running" | "success" | "failed";
+  trigger: "manual" | "scheduled";   // how the crawl was initiated
+  started_at: string;
+  completed_at: string | null;
+  error: string | null;
+  stats: CrawlStats | null;
+}
