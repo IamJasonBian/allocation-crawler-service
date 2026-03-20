@@ -4,8 +4,8 @@ const spec = {
   openapi: "3.0.3",
   info: {
     title: "Allocation Crawler Service",
-    version: "1.0.0",
-    description: "API for managing boards (companies), jobs, job runs, and users for the allocation crawler pipeline.",
+    version: "2.0.0",
+    description: "Unified API for job discovery, application tracking, and user management across the allocation pipeline.",
   },
   servers: [{ url: "/api/crawler" }],
   paths: {
@@ -21,7 +21,7 @@ const spec = {
         },
       },
       post: {
-        summary: "Add a board (filtered company)",
+        summary: "Add a board",
         requestBody: {
           required: true,
           content: { "application/json": { schema: { $ref: "#/components/schemas/BoardInput" } } },
@@ -46,20 +46,18 @@ const spec = {
     "/jobs": {
       get: {
         summary: "List jobs or runs",
-        description: "List/filter jobs by board and status. Use ?runs_for= to list job runs instead (empty string for all runs, or a job_id to filter).",
         parameters: [
           { name: "board", in: "query", schema: { type: "string" }, description: "Filter by board ID" },
-          { name: "status", in: "query", schema: { type: "string", enum: ["discovered", "queued", "applied", "found", "rejected", "expired"] } },
+          { name: "status", in: "query", schema: { type: "string", enum: ["discovered", "queued", "applied", "rejected", "expired"] } },
+          { name: "tag", in: "query", schema: { type: "string" }, description: "Filter by auto-extracted tag" },
           { name: "id", in: "query", schema: { type: "string" }, description: "Get single job (requires board param)" },
-          { name: "runs_for", in: "query", schema: { type: "string" }, description: "List runs. Pass job_id to filter, or empty string for all runs." },
+          { name: "runs_for", in: "query", schema: { type: "string" }, description: "List runs. Pass job_id to filter, or empty string for all." },
         ],
-        responses: {
-          "200": { description: "Jobs or runs returned" },
-        },
+        responses: { "200": { description: "Jobs or runs returned" } },
       },
       post: {
-        summary: "Add jobs or perform actions (run, notify, cleanup, retrieve)",
-        description: "Without 'action': add a single job or bulk jobs. With 'action': run (create job run), notify (Slack digest), cleanup (remove processed), retrieve (get jobs for agent).",
+        summary: "Add jobs or perform actions",
+        description: "Without 'action': add a single job or bulk jobs. With 'action': run, notify, cleanup, retrieve, check, or crawl.",
         requestBody: {
           required: true,
           content: {
@@ -83,18 +81,18 @@ const spec = {
                     title: "Bulk add jobs",
                     type: "object",
                     required: ["jobs"],
-                    properties: { jobs: { type: "array", items: { $ref: "#/components/schemas/JobInput" } } },
+                    properties: { jobs: { type: "array", items: { $ref: "#/components/schemas/FetchedJob" } } },
                   },
                   {
-                    title: "Create job run",
+                    title: "Create run (claim a job for application)",
                     type: "object",
-                    required: ["action", "run_id", "job_id", "board", "variant_id"],
+                    required: ["action", "run_id", "job_id", "board"],
                     properties: {
                       action: { type: "string", enum: ["run"] },
                       run_id: { type: "string" },
                       job_id: { type: "string" },
                       board: { type: "string" },
-                      variant_id: { type: "string" },
+                      artifacts: { $ref: "#/components/schemas/RunArtifacts" },
                     },
                   },
                   {
@@ -105,7 +103,25 @@ const spec = {
                       action: { type: "string", enum: ["notify", "cleanup", "retrieve"] },
                       board: { type: "string", description: "Optional board filter" },
                       status: { type: "string", description: "Optional status filter" },
+                      user: { type: "string", description: "User ID for retrieve — filters by interest tags" },
                     },
+                  },
+                  {
+                    title: "Check applied jobs",
+                    type: "object",
+                    required: ["action"],
+                    properties: {
+                      action: { type: "string", enum: ["check"] },
+                      board: { type: "string", description: "Optional board filter" },
+                    },
+                    description: "Returns verified (has confirmation_url) vs unverified applied jobs",
+                  },
+                  {
+                    title: "Crawl all boards",
+                    type: "object",
+                    required: ["action"],
+                    properties: { action: { type: "string", enum: ["crawl"] } },
+                    description: "Fetches all registered boards from their ATS APIs, inserts new jobs, updates changed ones",
                   },
                 ],
               },
@@ -116,11 +132,11 @@ const spec = {
           "200": { description: "Action completed" },
           "201": { description: "Job(s) or run created" },
           "400": { description: "Missing required fields" },
+          "409": { description: "Conflict — job already has an active run" },
         },
       },
       patch: {
-        summary: "Update job status or run status",
-        description: "With run_id: updates a run. With board+job_id: updates a job status.",
+        summary: "Update job or run status",
         requestBody: {
           required: true,
           content: {
@@ -134,7 +150,7 @@ const spec = {
                     properties: {
                       board: { type: "string" },
                       job_id: { type: "string" },
-                      status: { type: "string", enum: ["discovered", "queued", "applied", "found", "rejected", "expired"] },
+                      status: { type: "string", enum: ["discovered", "queued", "applied", "rejected", "expired"] },
                     },
                   },
                   {
@@ -145,6 +161,7 @@ const spec = {
                       run_id: { type: "string" },
                       status: { type: "string", enum: ["pending", "submitted", "success", "failed"] },
                       error: { type: "string" },
+                      artifacts: { $ref: "#/components/schemas/RunArtifacts", description: "Merged with existing — include confirmation_url for verified applied" },
                     },
                   },
                 ],
@@ -175,22 +192,36 @@ const spec = {
     },
     "/users": {
       get: {
-        summary: "List users",
+        summary: "List users or serve resume blob",
         parameters: [
           { name: "id", in: "query", schema: { type: "string" }, description: "Get single user" },
+          { name: "blob", in: "query", schema: { type: "string" }, description: "Serve a stored resume file by blob key" },
         ],
         responses: {
-          "200": { description: "User(s) returned", content: { "application/json": { schema: { $ref: "#/components/schemas/UserList" } } } },
+          "200": { description: "User(s) or blob returned" },
         },
       },
       post: {
-        summary: "Create or update a user",
+        summary: "Create/update user or upload resume",
+        description: "JSON body: upsert user profile. Multipart form: upload resume to blob storage.",
         requestBody: {
           required: true,
-          content: { "application/json": { schema: { $ref: "#/components/schemas/UserInput" } } },
+          content: {
+            "application/json": { schema: { $ref: "#/components/schemas/UserInput" } },
+            "multipart/form-data": {
+              schema: {
+                type: "object",
+                required: ["file", "userId"],
+                properties: {
+                  file: { type: "string", format: "binary" },
+                  userId: { type: "string" },
+                },
+              },
+            },
+          },
         },
         responses: {
-          "201": { description: "User upserted", content: { "application/json": { schema: { $ref: "#/components/schemas/User" } } } },
+          "201": { description: "User upserted or resume uploaded" },
         },
       },
     },
@@ -212,7 +243,7 @@ const spec = {
           content: { "application/json": { schema: { $ref: "#/components/schemas/CrawlInput" } } },
         },
         responses: {
-          "201": { description: "Crawl created", content: { "application/json": { schema: { $ref: "#/components/schemas/Crawl" } } } },
+          "201": { description: "Crawl created" },
           "400": { description: "Missing or invalid trigger" },
         },
       },
@@ -236,7 +267,7 @@ const spec = {
           },
         },
         responses: {
-          "200": { description: "Crawl updated", content: { "application/json": { schema: { $ref: "#/components/schemas/Crawl" } } } },
+          "200": { description: "Crawl updated" },
           "404": { description: "Crawl not found" },
         },
       },
@@ -247,17 +278,21 @@ const spec = {
       Board: {
         type: "object",
         properties: {
-          id: { type: "string" },
-          company: { type: "string" },
+          id: { type: "string", description: "Slug identifier (e.g. janestreet, stripe)" },
+          company: { type: "string", description: "Display name" },
+          ats: { type: "string", enum: ["greenhouse", "lever", "ashby"] },
+          career_page_url: { type: "string" },
           created_at: { type: "string", format: "date-time" },
         },
       },
       BoardInput: {
         type: "object",
-        required: ["id", "company"],
+        required: ["id", "company", "ats"],
         properties: {
           id: { type: "string", example: "stripe" },
           company: { type: "string", example: "Stripe" },
+          ats: { type: "string", enum: ["greenhouse", "lever", "ashby"] },
+          career_page_url: { type: "string", example: "https://stripe.com/jobs" },
         },
       },
       BoardList: {
@@ -265,6 +300,18 @@ const spec = {
         properties: {
           count: { type: "integer" },
           boards: { type: "array", items: { $ref: "#/components/schemas/Board" } },
+        },
+      },
+      FetchedJob: {
+        type: "object",
+        description: "Normalized job from an ATS API, before persistence",
+        required: ["job_id", "title", "url", "location", "department"],
+        properties: {
+          job_id: { type: "string" },
+          title: { type: "string" },
+          url: { type: "string" },
+          location: { type: "string" },
+          department: { type: "string" },
         },
       },
       Job: {
@@ -276,42 +323,59 @@ const spec = {
           url: { type: "string" },
           location: { type: "string" },
           department: { type: "string" },
-          status: { type: "string", enum: ["discovered", "queued", "applied", "found", "rejected", "expired"] },
+          tags: { type: "array", items: { type: "string" }, description: "Auto-extracted from title+department" },
+          content_hash: { type: "string", description: "SHA256(title|location|department) — detect real changes across crawls" },
+          status: { type: "string", enum: ["discovered", "queued", "applied", "rejected", "expired"] },
           discovered_at: { type: "string", format: "date-time" },
           updated_at: { type: "string", format: "date-time" },
+          last_seen_at: { type: "string", format: "date-time", description: "Last crawl where this job was still on the board" },
+          applied_at: { type: "string", format: "date-time", nullable: true },
+          applied_run_id: { type: "string", nullable: true },
         },
       },
-      JobInput: {
+      RunArtifacts: {
         type: "object",
-        required: ["job_id", "board"],
+        description: "Evidence and materials from a job application attempt",
         properties: {
-          job_id: { type: "string" },
-          board: { type: "string" },
-          title: { type: "string" },
-          url: { type: "string" },
-          location: { type: "string" },
-          department: { type: "string" },
+          resume_url: { type: "string", description: "Blob key or URL of resume used" },
+          resume_variant_id: { type: "string", description: "Which resume variant was selected" },
+          cover_letter: { type: "string" },
+          answers: { type: "object", additionalProperties: { type: "string" }, description: "Form field answers submitted" },
+          confirmation_url: { type: "string", description: "Confirmation page URL — required for verified applied status" },
+          screenshot_keys: { type: "array", items: { type: "string" }, description: "Blob keys for submission screenshots" },
+          notes: { type: "string" },
         },
       },
-      JobRun: {
+      Run: {
         type: "object",
         properties: {
           run_id: { type: "string" },
           job_id: { type: "string" },
           board: { type: "string" },
-          variant_id: { type: "string" },
           status: { type: "string", enum: ["pending", "submitted", "success", "failed"] },
           started_at: { type: "string", format: "date-time" },
           completed_at: { type: "string", format: "date-time", nullable: true },
           error: { type: "string", nullable: true },
+          artifacts: { $ref: "#/components/schemas/RunArtifacts", nullable: true },
+        },
+      },
+      ResumeVariant: {
+        type: "object",
+        properties: {
+          id: { type: "string", description: "e.g. quant-v3" },
+          name: { type: "string", description: "Display name" },
+          blob_key: { type: "string", description: "Netlify Blobs storage key" },
+          file_hash: { type: "string", description: "SHA256 of file content" },
+          created_at: { type: "string", format: "date-time" },
         },
       },
       User: {
         type: "object",
         properties: {
           id: { type: "string" },
-          resumes: { type: "array", items: { type: "string" } },
-          answers: { type: "object", additionalProperties: { type: "string" } },
+          resumes: { type: "array", items: { $ref: "#/components/schemas/ResumeVariant" } },
+          answers: { type: "object", additionalProperties: { type: "string" }, description: "Default form answers (visa, yoe, etc.)" },
+          tags: { type: "array", items: { type: "string" }, description: "Interest tags for job filtering" },
           updated_at: { type: "string", format: "date-time" },
         },
       },
@@ -320,15 +384,9 @@ const spec = {
         required: ["id"],
         properties: {
           id: { type: "string" },
-          resumes: { type: "array", items: { type: "string" } },
+          resumes: { type: "array", items: { $ref: "#/components/schemas/ResumeVariant" } },
           answers: { type: "object", additionalProperties: { type: "string" } },
-        },
-      },
-      UserList: {
-        type: "object",
-        properties: {
-          count: { type: "integer" },
-          users: { type: "array", items: { $ref: "#/components/schemas/User" } },
+          tags: { type: "array", items: { type: "string" } },
         },
       },
       CrawlStats: {
@@ -357,7 +415,7 @@ const spec = {
         type: "object",
         required: ["trigger"],
         properties: {
-          trigger: { type: "string", enum: ["manual", "scheduled"], example: "manual" },
+          trigger: { type: "string", enum: ["manual", "scheduled"] },
           crawl_id: { type: "string", description: "Optional custom ID; auto-generated if omitted" },
         },
       },

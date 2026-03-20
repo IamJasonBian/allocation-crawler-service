@@ -12,22 +12,24 @@ import {
   createRun,
   updateRun,
   listRuns,
+  checkApplied,
 } from "../../src/lib/entities.js";
 import { crawlBoard } from "../../src/lib/fetchers.js";
-import type { Job, JobRun } from "../../src/lib/types.js";
+import type { Job, Run, RunStatus, JobStatus } from "../../src/lib/types.js";
 
 /**
  * /api/crawler/jobs
  *
- * GET                              - List jobs (?board=, ?status=, ?id=&board= for single)
+ * GET                              - List jobs (?board=, ?status=, ?tag=, ?id=&board= for single)
  * GET  ?runs_for=<job_id>          - List runs (empty string for all)
  * POST  { job_id, board, ... }     - Add single job
  * POST  { jobs: [...] }            - Bulk add jobs
  * POST  { action: "run", ... }     - Create a job run
  * POST  { action: "notify", ... }  - Send Slack digest of discovered jobs
  * POST  { action: "cleanup", ... } - Remove processed jobs
- * POST  { action: "retrieve", ...} - Retrieve job_ids for allocation-agent
- * POST  { action: "crawl" }       - Crawl all registered boards and ingest jobs
+ * POST  { action: "retrieve", ...} - Retrieve jobs for allocation-agent
+ * POST  { action: "check", ... }   - Audit applied jobs (verified vs unverified)
+ * POST  { action: "crawl" }        - Crawl all registered boards and ingest jobs
  * PATCH { board, job_id, status }  - Update job status
  * PATCH { run_id, status }         - Update run status
  * DELETE { board, job_id }         - Remove a job
@@ -71,7 +73,7 @@ export default async (req: Request) => {
 
       if (Array.isArray(body.jobs)) {
         const results = await addJobsBulk(r, body.jobs);
-        return json({ count: results.length, jobs: results }, 201);
+        return json({ new_count: results.new.length, updated_count: results.updated, jobs: results.new }, 201);
       }
 
       if (!body.job_id || !body.board) {
@@ -94,7 +96,7 @@ export default async (req: Request) => {
 
       if (body.run_id) {
         if (!body.status) return json({ error: "status is required" }, 400);
-        const validRunStatuses: JobRun["status"][] = ["pending", "submitted", "success", "failed"];
+        const validRunStatuses: RunStatus[] = ["pending", "submitted", "success", "failed"];
         if (!validRunStatuses.includes(body.status)) {
           return json({ error: `run status must be one of: ${validRunStatuses.join(", ")}` }, 400);
         }
@@ -106,7 +108,7 @@ export default async (req: Request) => {
       if (!body.board || !body.job_id || !body.status) {
         return json({ error: "board, job_id, and status are required (or run_id for runs)" }, 400);
       }
-      const validStatuses: Job["status"][] = ["discovered", "queued", "applied", "found", "rejected", "expired"];
+      const validStatuses: JobStatus[] = ["discovered", "queued", "applied", "rejected", "expired"];
       if (!validStatuses.includes(body.status)) {
         return json({ error: `job status must be one of: ${validStatuses.join(", ")}` }, 400);
       }
@@ -141,17 +143,12 @@ async function handleAction(r: any, body: any) {
   const { action } = body;
 
   if (action === "run") {
-    if (!body.run_id || !body.job_id || !body.board || !body.variant_id) {
-      return json({ error: "run_id, job_id, board, and variant_id are required" }, 400);
+    if (!body.run_id || !body.job_id || !body.board) {
+      return json({ error: "run_id, job_id, and board are required" }, 400);
     }
     const result = await createRun(
       r,
-      {
-        run_id: body.run_id,
-        job_id: body.job_id,
-        board: body.board,
-        variant_id: body.variant_id,
-      },
+      { run_id: body.run_id, job_id: body.job_id, board: body.board },
       body.artifacts,
     );
     if ("error" in result) {
@@ -209,7 +206,6 @@ async function handleAction(r: any, body: any) {
   }
 
   if (action === "retrieve") {
-    // If user is specified, filter jobs by user's interest tags
     const jobs = body.user
       ? await listJobsForUser(r, body.user, { board: body.board, status: body.status || "discovered" })
       : await listJobs(r, { board: body.board, status: body.status || "discovered" });
@@ -228,32 +224,60 @@ async function handleAction(r: any, body: any) {
     });
   }
 
+  if (action === "check") {
+    const result = await checkApplied(r, { board: body.board });
+    return json({
+      verified_count: result.verified.length,
+      unverified_count: result.unverified.length,
+      verified: result.verified.map(({ job, run }) => ({
+        job_id: job.job_id,
+        board: job.board,
+        title: job.title,
+        url: job.url,
+        applied_at: job.applied_at,
+        applied_run_id: job.applied_run_id,
+        confirmation_url: run.artifacts?.confirmation_url,
+      })),
+      unverified: result.unverified.map(({ job, run }) => ({
+        job_id: job.job_id,
+        board: job.board,
+        title: job.title,
+        url: job.url,
+        applied_at: job.applied_at,
+        run_id: run?.run_id || null,
+        run_status: run?.status || null,
+      })),
+    });
+  }
+
   if (action === "crawl") {
     const boards = await listBoards(r);
-    const summary: Record<string, number> = {};
+    const summary: Record<string, { new: number; updated: number }> = {};
     let totalNew = 0;
+    let totalUpdated = 0;
 
     for (const board of boards) {
       if (!board.ats) continue;
       try {
         const raw = await crawlBoard(board.id, board.ats);
         if (raw.length > 0) {
-          const inserted = await addJobsBulk(r, raw.map((j) => ({ ...j, board: board.id })));
-          summary[board.id] = inserted.length;
-          totalNew += inserted.length;
+          const result = await addJobsBulk(r, raw.map((j) => ({ ...j, board: board.id })));
+          summary[board.id] = { new: result.new.length, updated: result.updated };
+          totalNew += result.new.length;
+          totalUpdated += result.updated;
         } else {
-          summary[board.id] = 0;
+          summary[board.id] = { new: 0, updated: 0 };
         }
       } catch (err: any) {
         console.error(`crawl ${board.id} failed:`, err.message);
-        summary[board.id] = -1;
+        summary[board.id] = { new: -1, updated: 0 };
       }
     }
 
-    return json({ message: "Crawl complete", total_new: totalNew, boards: summary });
+    return json({ message: "Crawl complete", total_new: totalNew, total_updated: totalUpdated, boards: summary });
   }
 
-  return json({ error: "action must be one of: run, notify, cleanup, retrieve, crawl" }, 400);
+  return json({ error: "action must be one of: run, notify, cleanup, retrieve, check, crawl" }, 400);
 }
 
 function json(data: unknown, status = 200) {
