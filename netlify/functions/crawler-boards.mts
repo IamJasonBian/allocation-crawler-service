@@ -36,7 +36,7 @@ export default async (req: Request) => {
       if (!VALID_ATS.includes(body.ats)) {
         return json({ error: `ats must be one of: ${VALID_ATS.join(", ")}` }, 400);
       }
-      const board = await addBoard(r, body.id, body.company, body.ats);
+      const board = await addBoard(r, body.id, body.company, body.ats, body.career_page_url || "");
       return json(board, 201);
     }
 

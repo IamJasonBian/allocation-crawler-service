@@ -1,6 +1,7 @@
 import type Redis from "ioredis";
-import type { Board, Job, JobRun, RunArtifacts, User, Crawl, CrawlStats } from "./types.js";
+import type { ATSType, Board, Job, JobStatus, Run, RunStatus, RunArtifacts, User, ResumeVariant, Crawl, CrawlStats, FetchedJob } from "./types.js";
 import { extractTags } from "./tags.js";
+import { createHash } from "crypto";
 
 /* ── Pipeline helper ── */
 async function execPipe(pipe: ReturnType<Redis["pipeline"]>) {
@@ -30,12 +31,19 @@ const K = {
   crawlsAll: () => "idx:crawls",
 };
 
+export { K };
+
+/** Content hash for change detection — same algorithm as notification service. */
+function contentHash(title: string, location: string, department: string): string {
+  return createHash("sha256").update(`${title}|${location}|${department}`).digest("hex").slice(0, 16);
+}
+
 /* ══════════════════════ Boards ══════════════════════ */
 
-export async function addBoard(r: Redis, id: string, company: string, ats: string): Promise<Board> {
-  const board: Board = { id, company, ats, created_at: new Date().toISOString() };
+export async function addBoard(r: Redis, id: string, company: string, ats: ATSType, career_page_url = ""): Promise<Board> {
+  const board: Board = { id, company, ats, career_page_url, created_at: new Date().toISOString() };
   const pipe = r.pipeline();
-  pipe.hset(K.board(id), { id, company, ats, created_at: board.created_at });
+  pipe.hset(K.board(id), { id, company, ats, career_page_url, created_at: board.created_at });
   pipe.sadd(K.boardsIdx(), id);
   await execPipe(pipe);
   return board;
@@ -71,7 +79,7 @@ export async function listBoards(r: Redis): Promise<Board[]> {
   const boards = await Promise.all(
     ids.map(async (id) => {
       const data = await r.hgetall(K.board(id));
-      return data.id ? (data as unknown as Board) : null;
+      return data.id ? parseBoardHash(data) : null;
     })
   );
   return boards.filter((b): b is Board => b !== null);
@@ -79,29 +87,36 @@ export async function listBoards(r: Redis): Promise<Board[]> {
 
 export async function getBoard(r: Redis, id: string): Promise<Board | null> {
   const data = await r.hgetall(K.board(id));
-  return data.id ? (data as unknown as Board) : null;
+  return data.id ? parseBoardHash(data) : null;
+}
+
+function parseBoardHash(data: Record<string, string>): Board {
+  return {
+    id: data.id,
+    company: data.company,
+    ats: (data.ats || "greenhouse") as ATSType,
+    career_page_url: data.career_page_url || "",
+    created_at: data.created_at,
+  };
 }
 
 /* ══════════════════════ Jobs ══════════════════════ */
 
-export async function addJob(r: Redis, job: Omit<Job, "discovered_at" | "updated_at" | "status" | "tags">): Promise<Job> {
+type NewJobInput = FetchedJob & { board: string };
+
+export async function addJob(r: Redis, job: NewJobInput): Promise<Job> {
   const now = new Date().toISOString();
   const tags = extractTags(job.title, job.department);
-  const full: Job = { ...job, tags, status: "discovered", discovered_at: now, updated_at: now };
+  const hash = contentHash(job.title, job.location, job.department);
+  const full: Job = {
+    ...job, tags, content_hash: hash,
+    status: "discovered",
+    discovered_at: now, updated_at: now, last_seen_at: now,
+    applied_at: null, applied_run_id: null,
+  };
   const ck = `${job.board}:${job.job_id}`;
   const pipe = r.pipeline();
-  pipe.hset(K.job(job.board, job.job_id), {
-    job_id: full.job_id,
-    board: full.board,
-    title: full.title,
-    url: full.url,
-    location: full.location,
-    department: full.department,
-    tags: tags.join(","),
-    status: full.status,
-    discovered_at: full.discovered_at,
-    updated_at: full.updated_at,
-  });
+  pipe.hset(K.job(job.board, job.job_id), jobToRedis(full));
   pipe.sadd(K.boardJobsIdx(job.board), job.job_id);
   pipe.sadd(K.jobStatusIdx("discovered"), ck);
   for (const tag of tags) {
@@ -111,46 +126,72 @@ export async function addJob(r: Redis, job: Omit<Job, "discovered_at" | "updated
   return full;
 }
 
-export async function addJobsBulk(r: Redis, jobs: Omit<Job, "discovered_at" | "updated_at" | "status" | "tags">[]): Promise<Job[]> {
-  if (jobs.length === 0) return [];
+/**
+ * Bulk-add jobs from a crawl. New jobs are inserted as "discovered".
+ * Existing jobs get their last_seen_at bumped and content_hash checked for updates.
+ * Returns only newly inserted jobs.
+ */
+export async function addJobsBulk(r: Redis, jobs: NewJobInput[]): Promise<{ new: Job[]; updated: number }> {
+  if (jobs.length === 0) return { new: [], updated: 0 };
 
-  // Check which jobs already exist — skip them to avoid resetting status
   const existChecks = await Promise.all(
     jobs.map((j) => r.exists(K.job(j.board, j.job_id)))
   );
-  const newJobs = jobs.filter((_, i) => !existChecks[i]);
-  if (newJobs.length === 0) return [];
 
   const now = new Date().toISOString();
-  const results: Job[] = [];
+  const newResults: Job[] = [];
+  let updatedCount = 0;
   const pipe = r.pipeline();
 
-  for (const job of newJobs) {
-    const tags = extractTags(job.title, job.department);
-    const full: Job = { ...job, tags, status: "discovered", discovered_at: now, updated_at: now };
-    const ck = `${job.board}:${job.job_id}`;
-    pipe.hset(K.job(job.board, job.job_id), {
-      job_id: full.job_id,
-      board: full.board,
-      title: full.title,
-      url: full.url,
-      location: full.location,
-      department: full.department,
-      tags: tags.join(","),
-      status: full.status,
-      discovered_at: full.discovered_at,
-      updated_at: full.updated_at,
-    });
-    pipe.sadd(K.boardJobsIdx(job.board), job.job_id);
-    pipe.sadd(K.jobStatusIdx("discovered"), ck);
-    for (const tag of tags) {
-      pipe.sadd(K.tagIdx(tag), ck);
+  for (let i = 0; i < jobs.length; i++) {
+    const job = jobs[i];
+    const exists = existChecks[i];
+
+    if (!exists) {
+      // New job
+      const tags = extractTags(job.title, job.department);
+      const hash = contentHash(job.title, job.location, job.department);
+      const full: Job = {
+        ...job, tags, content_hash: hash,
+        status: "discovered",
+        discovered_at: now, updated_at: now, last_seen_at: now,
+        applied_at: null, applied_run_id: null,
+      };
+      const ck = `${job.board}:${job.job_id}`;
+      pipe.hset(K.job(job.board, job.job_id), jobToRedis(full));
+      pipe.sadd(K.boardJobsIdx(job.board), job.job_id);
+      pipe.sadd(K.jobStatusIdx("discovered"), ck);
+      for (const tag of tags) {
+        pipe.sadd(K.tagIdx(tag), ck);
+      }
+      newResults.push(full);
+    } else {
+      // Existing job — bump last_seen_at, check for content changes
+      const newHash = contentHash(job.title, job.location, job.department);
+      pipe.hset(K.job(job.board, job.job_id), { last_seen_at: now });
+
+      // Queue a content-change check (we'll read current hash after pipe)
+      const existing = await r.hget(K.job(job.board, job.job_id), "content_hash");
+      if (existing && existing !== newHash) {
+        // Content changed — update fields
+        const tags = extractTags(job.title, job.department);
+        pipe.hset(K.job(job.board, job.job_id), {
+          title: job.title,
+          url: job.url,
+          location: job.location,
+          department: job.department,
+          tags: tags.join(","),
+          content_hash: newHash,
+          updated_at: now,
+          last_seen_at: now,
+        });
+        updatedCount++;
+      }
     }
-    results.push(full);
   }
 
   await execPipe(pipe);
-  return results;
+  return { new: newResults, updated: updatedCount };
 }
 
 export async function removeJob(r: Redis, board: string, jobId: string): Promise<boolean> {
@@ -176,7 +217,7 @@ export async function updateJobStatus(
   r: Redis,
   board: string,
   jobId: string,
-  newStatus: Job["status"]
+  newStatus: JobStatus
 ): Promise<Job | null> {
   const key = K.job(board, jobId);
   const data = await r.hgetall(key);
@@ -191,28 +232,50 @@ export async function updateJobStatus(
   pipe.sadd(K.jobStatusIdx(newStatus), ck);
   await execPipe(pipe);
 
-  return {
-    ...(data as unknown as Job),
-    tags: data.tags ? data.tags.split(",") : [],
-    status: newStatus,
-    updated_at: now,
-  };
+  return parseJobHash({ ...data, status: newStatus, updated_at: now });
 }
 
 export async function getJob(r: Redis, board: string, jobId: string): Promise<Job | null> {
   const data = await r.hgetall(K.job(board, jobId));
-  if (!data.job_id) return null;
+  return parseJobHash(data);
+}
+
+function jobToRedis(job: Job): Record<string, string> {
   return {
-    ...(data as unknown as Job),
-    tags: data.tags ? data.tags.split(",") : [],
+    job_id: job.job_id,
+    board: job.board,
+    title: job.title,
+    url: job.url,
+    location: job.location,
+    department: job.department,
+    tags: job.tags.join(","),
+    content_hash: job.content_hash,
+    status: job.status,
+    discovered_at: job.discovered_at,
+    updated_at: job.updated_at,
+    last_seen_at: job.last_seen_at,
+    applied_at: job.applied_at || "",
+    applied_run_id: job.applied_run_id || "",
   };
 }
 
 function parseJobHash(data: Record<string, string>): Job | null {
   if (!data.job_id) return null;
   return {
-    ...(data as unknown as Job),
+    job_id: data.job_id,
+    board: data.board,
+    title: data.title,
+    url: data.url,
+    location: data.location || "",
+    department: data.department || "",
     tags: data.tags ? data.tags.split(",") : [],
+    content_hash: data.content_hash || "",
+    status: (data.status || "discovered") as JobStatus,
+    discovered_at: data.discovered_at,
+    updated_at: data.updated_at,
+    last_seen_at: data.last_seen_at || data.updated_at,
+    applied_at: data.applied_at || null,
+    applied_run_id: data.applied_run_id || null,
   };
 }
 
@@ -226,7 +289,6 @@ export async function listJobs(r: Redis, opts?: { board?: string; status?: strin
   let compositeKeys: string[];
 
   if (sets.length === 0) {
-    // All jobs from all boards
     const boardIds = await r.smembers(K.boardsIdx());
     compositeKeys = [];
     for (const bid of boardIds) {
@@ -234,11 +296,9 @@ export async function listJobs(r: Redis, opts?: { board?: string; status?: strin
       compositeKeys.push(...jids.map((jid) => `${bid}:${jid}`));
     }
   } else if (opts?.board && sets.length === 1) {
-    // Board-only filter: board index stores bare job_ids, need to prefix
     const jobIds = await r.smembers(K.boardJobsIdx(opts.board));
     compositeKeys = jobIds.map((jid) => `${opts.board}:${jid}`);
   } else if (opts?.board) {
-    // Board + other filters: intersect, but board index has bare ids
     const boardJobIds = await r.smembers(K.boardJobsIdx(opts.board));
     const boardCKs = new Set(boardJobIds.map((jid) => `${opts.board}:${jid}`));
     const otherSets = sets.filter((s) => s !== K.boardJobsIdx(opts.board!));
@@ -275,7 +335,6 @@ export async function listJobsForUser(r: Redis, userId: string, opts?: { board?:
 
   const status = opts?.status || "discovered";
 
-  // Union all tag sets the user is interested in
   const tagSets = user.tags.map((t) => K.tagIdx(t));
   let candidateKeys: string[];
   if (tagSets.length === 1) {
@@ -284,12 +343,10 @@ export async function listJobsForUser(r: Redis, userId: string, opts?: { board?:
     candidateKeys = await r.sunion(...tagSets);
   }
 
-  // Intersect with status
   const statusMembers = await r.smembers(K.jobStatusIdx(status));
   const statusSet = new Set(statusMembers);
   let filtered = candidateKeys.filter((ck) => statusSet.has(ck));
 
-  // Optionally filter by board
   if (opts?.board) {
     filtered = filtered.filter((ck) => ck.startsWith(`${opts.board}:`));
   }
@@ -304,36 +361,26 @@ export async function listJobsForUser(r: Redis, userId: string, opts?: { board?:
   return jobs.filter((j): j is Job => j !== null);
 }
 
-/* ══════════════════════ JobRuns ══════════════════════ */
+/* ══════════════════════ Runs ══════════════════════ */
 
 const LOCK_TTL_SECONDS = 300; // 5 min — auto-expire if agent crashes
-const APPLICABLE_STATUSES = new Set<Job["status"]>(["discovered", "queued"]);
+const APPLICABLE_STATUSES = new Set<JobStatus>(["discovered", "queued"]);
 
 /**
  * Create a run with SETNX-based locking to prevent duplicate applications.
- *
- * Flow:
- *   1. SETNX lock:apply:{board}:{job_id} → fail? return { error, code: 409 }
- *   2. Verify job exists and is in an applicable status
- *   3. Create the run hash + index entries
- *   4. Transition job from "discovered" → "queued"
- *
- * @returns { run } on success, or { error, code } on conflict/bad state
  */
 export async function createRun(
   r: Redis,
-  run: Omit<JobRun, "started_at" | "completed_at" | "error" | "status" | "artifacts">,
+  run: Pick<Run, "run_id" | "job_id" | "board">,
   artifacts?: RunArtifacts,
-): Promise<{ run: JobRun } | { error: string; code: number }> {
+): Promise<{ run: Run } | { error: string; code: number }> {
   const lockKey = K.applyLock(run.board, run.job_id);
 
-  // 1. Atomic lock — only one agent can claim this job
   const locked = await r.set(lockKey, run.run_id, "EX", LOCK_TTL_SECONDS, "NX");
   if (!locked) {
     return { error: "Job already has an active application in progress", code: 409 };
   }
 
-  // 2. Check job status
   const job = await getJob(r, run.board, run.job_id);
   if (!job) {
     await r.del(lockKey);
@@ -344,9 +391,8 @@ export async function createRun(
     return { error: `Job is in '${job.status}' status — only discovered/queued jobs can be applied to`, code: 400 };
   }
 
-  // 3. Create the run
   const now = new Date().toISOString();
-  const full: JobRun = {
+  const full: Run = {
     ...run,
     status: "pending",
     started_at: now,
@@ -355,22 +401,11 @@ export async function createRun(
     artifacts: artifacts || null,
   };
   const pipe = r.pipeline();
-  pipe.hset(K.run(run.run_id), {
-    run_id: full.run_id,
-    job_id: full.job_id,
-    board: full.board,
-    variant_id: full.variant_id,
-    status: full.status,
-    started_at: full.started_at,
-    completed_at: "",
-    error: "",
-    artifacts: JSON.stringify(full.artifacts),
-  });
+  pipe.hset(K.run(run.run_id), runToRedis(full));
   pipe.sadd(K.jobRunsIdx(run.job_id), run.run_id);
   pipe.sadd(K.runsAll(), run.run_id);
   await execPipe(pipe);
 
-  // 4. Transition job to "queued" if it was "discovered"
   if (job.status === "discovered") {
     await updateJobStatus(r, run.board, run.job_id, "queued");
   }
@@ -381,14 +416,15 @@ export async function createRun(
 /**
  * Update a run's status and optionally merge artifacts.
  *
- * On success: job → "applied", lock deleted.
+ * On success with confirmation_url: job → "applied", lock deleted.
+ * On success without confirmation_url: job stays "queued" (needs verification).
  * On failure (no other active runs): job → "discovered", lock deleted.
  */
 export async function updateRun(
   r: Redis,
   runId: string,
-  update: { status: JobRun["status"]; error?: string; artifacts?: RunArtifacts }
-): Promise<JobRun | null> {
+  update: { status: RunStatus; error?: string; artifacts?: RunArtifacts }
+): Promise<Run | null> {
   const key = K.run(runId);
   const data = await r.hgetall(key);
   if (!data.run_id) return null;
@@ -400,7 +436,7 @@ export async function updateRun(
   }
   if (update.error) fields.error = update.error;
 
-  // Merge artifacts — append new fields to existing
+  // Merge artifacts incrementally
   if (update.artifacts) {
     const existing: RunArtifacts = data.artifacts ? JSON.parse(data.artifacts) : {};
     const merged = { ...existing, ...update.artifacts };
@@ -416,12 +452,18 @@ export async function updateRun(
   const jobId = data.job_id;
   const lockKey = K.applyLock(board, jobId);
 
-  // Auto-transition job status based on run outcome
   if (update.status === "success") {
-    await updateJobStatus(r, board, jobId, "applied");
+    const runData = await r.hgetall(key);
+    const artifacts = runData.artifacts ? JSON.parse(runData.artifacts) : {};
+    const hasConfirmation = Boolean(artifacts.confirmation_url);
+
+    if (hasConfirmation) {
+      await updateJobStatus(r, board, jobId, "applied");
+      await r.hset(K.job(board, jobId), { applied_at: now, applied_run_id: runId });
+    }
+    // Without confirmation_url, job stays queued for manual verification
     await r.del(lockKey);
   } else if (update.status === "failed") {
-    // Check if any other active runs exist for this job
     const siblingRuns = await listRuns(r, jobId);
     const hasActiveRun = siblingRuns.some(
       (sr) => sr.run_id !== runId && (sr.status === "pending" || sr.status === "submitted")
@@ -436,14 +478,26 @@ export async function updateRun(
   return parseRunHash(updated);
 }
 
-function parseRunHash(data: Record<string, string>): JobRun | null {
+function runToRedis(run: Run): Record<string, string> {
+  return {
+    run_id: run.run_id,
+    job_id: run.job_id,
+    board: run.board,
+    status: run.status,
+    started_at: run.started_at,
+    completed_at: run.completed_at || "",
+    error: run.error || "",
+    artifacts: JSON.stringify(run.artifacts),
+  };
+}
+
+function parseRunHash(data: Record<string, string>): Run | null {
   if (!data.run_id) return null;
   return {
     run_id: data.run_id,
     job_id: data.job_id,
     board: data.board,
-    variant_id: data.variant_id,
-    status: data.status as JobRun["status"],
+    status: data.status as RunStatus,
     started_at: data.started_at,
     completed_at: data.completed_at || null,
     error: data.error || null,
@@ -451,7 +505,7 @@ function parseRunHash(data: Record<string, string>): JobRun | null {
   };
 }
 
-export async function listRuns(r: Redis, jobId?: string): Promise<JobRun[]> {
+export async function listRuns(r: Redis, jobId?: string): Promise<Run[]> {
   const runIds = jobId
     ? await r.smembers(K.jobRunsIdx(jobId))
     : await r.smembers(K.runsAll());
@@ -462,12 +516,50 @@ export async function listRuns(r: Redis, jobId?: string): Promise<JobRun[]> {
       return parseRunHash(data);
     })
   );
-  return runs.filter((r): r is JobRun => r !== null);
+  return runs.filter((r): r is Run => r !== null);
+}
+
+/**
+ * Audit applied jobs — returns verified (has confirmation_url) vs unverified.
+ */
+export async function checkApplied(r: Redis, opts?: { board?: string }): Promise<{
+  verified: { job: Job; run: Run }[];
+  unverified: { job: Job; run: Run | null }[];
+}> {
+  const appliedJobs = await listJobs(r, { status: "applied", board: opts?.board });
+  const verified: { job: Job; run: Run }[] = [];
+  const unverified: { job: Job; run: Run | null }[] = [];
+
+  for (const job of appliedJobs) {
+    let run: Run | null = null;
+    if (job.applied_run_id) {
+      const data = await r.hgetall(K.run(job.applied_run_id));
+      run = parseRunHash(data);
+    }
+    if (!run) {
+      const runs = await listRuns(r, job.job_id);
+      run = runs.find((rn) => rn.status === "success") || null;
+    }
+
+    if (run?.artifacts?.confirmation_url) {
+      verified.push({ job, run });
+    } else {
+      unverified.push({ job, run });
+    }
+  }
+
+  return { verified, unverified };
 }
 
 /* ══════════════════════ Users ══════════════════════ */
 
-export async function upsertUser(r: Redis, id: string, resumes: string[], answers: Record<string, string>, tags: string[]): Promise<User> {
+export async function upsertUser(
+  r: Redis,
+  id: string,
+  resumes: ResumeVariant[],
+  answers: Record<string, string>,
+  tags: string[]
+): Promise<User> {
   const now = new Date().toISOString();
   const pipe = r.pipeline();
   pipe.hset(K.user(id), {
@@ -567,7 +659,6 @@ export async function listCrawls(r: Redis): Promise<Crawl[]> {
   const ids = await r.smembers(K.crawlsAll());
   const crawls = await Promise.all(ids.map((id) => getCrawl(r, id)));
   const valid = crawls.filter((c): c is Crawl => c !== null);
-  // Sort by started_at descending
   valid.sort((a, b) => (b.started_at > a.started_at ? 1 : b.started_at < a.started_at ? -1 : 0));
   return valid;
 }

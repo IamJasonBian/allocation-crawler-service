@@ -1,14 +1,8 @@
 /* ── ATS Fetchers ── */
 
-export interface RawJob {
-  job_id: string;
-  title: string;
-  url: string;
-  location: string;
-  department: string;
-}
+import type { FetchedJob, ATSType } from "./types.js";
 
-export async function fetchGreenhouse(token: string): Promise<RawJob[]> {
+export async function fetchGreenhouse(token: string): Promise<FetchedJob[]> {
   const res = await fetch(
     `https://boards-api.greenhouse.io/v1/boards/${token}/jobs`,
     { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(15000) }
@@ -24,7 +18,7 @@ export async function fetchGreenhouse(token: string): Promise<RawJob[]> {
   }));
 }
 
-export async function fetchLever(token: string): Promise<RawJob[]> {
+export async function fetchLever(token: string): Promise<FetchedJob[]> {
   const res = await fetch(
     `https://api.lever.co/v0/postings/${token}`,
     { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(15000) }
@@ -40,7 +34,7 @@ export async function fetchLever(token: string): Promise<RawJob[]> {
   }));
 }
 
-export async function fetchAshby(token: string): Promise<RawJob[]> {
+export async function fetchAshby(token: string): Promise<FetchedJob[]> {
   const res = await fetch(
     `https://api.ashbyhq.com/posting-api/job-board/${token}`,
     { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(15000) }
@@ -56,13 +50,13 @@ export async function fetchAshby(token: string): Promise<RawJob[]> {
   }));
 }
 
-const fetchers: Record<string, (token: string) => Promise<RawJob[]>> = {
+const fetchers: Record<string, (token: string) => Promise<FetchedJob[]>> = {
   greenhouse: fetchGreenhouse,
   lever: fetchLever,
   ashby: fetchAshby,
 };
 
-export async function crawlBoard(token: string, ats: string): Promise<RawJob[]> {
+export async function crawlBoard(token: string, ats: ATSType | string): Promise<FetchedJob[]> {
   const fetcher = fetchers[ats];
   if (!fetcher) return [];
   return fetcher(token);

@@ -90,7 +90,7 @@ export default async (req: Request) => {
       const user = await upsertUser(
         r,
         body.id,
-        body.resumes || [],
+        body.resumes || [],   // ResumeVariant[] from client
         body.answers || {},
         body.tags || []
       );
