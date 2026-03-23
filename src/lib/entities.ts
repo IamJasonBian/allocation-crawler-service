@@ -551,6 +551,93 @@ export async function checkApplied(r: Redis, opts?: { board?: string }): Promise
   return { verified, unverified };
 }
 
+/* ══════════════════════ Index Reconciliation ══════════════════════ */
+
+const ALL_JOB_STATUSES: JobStatus[] = ["discovered", "queued", "applied", "rejected", "expired"];
+
+/**
+ * Rebuild all status and tag indexes from the source-of-truth job hashes.
+ * Clears every idx:job_status:* and idx:tag:* set, then re-populates
+ * from what's actually stored in each job hash.
+ *
+ * Returns a summary of what was fixed.
+ */
+export async function reconcileIndexes(r: Redis): Promise<{
+  jobs_scanned: number;
+  status_index_rebuilt: Record<string, number>;
+  tag_index_rebuilt: Record<string, number>;
+  orphan_index_entries_removed: number;
+}> {
+  // 1. Collect all board IDs
+  const boardIds = await r.smembers(K.boardsIdx());
+
+  // 2. Clear all status and tag index sets
+  const pipe1 = r.pipeline();
+  for (const status of ALL_JOB_STATUSES) {
+    pipe1.del(K.jobStatusIdx(status));
+  }
+  // Find all tag index keys via SCAN
+  const tagKeys: string[] = [];
+  let cursor = "0";
+  do {
+    const [nextCursor, keys] = await r.scan(cursor, "MATCH", "idx:tag:*", "COUNT", 100);
+    cursor = nextCursor;
+    tagKeys.push(...keys);
+  } while (cursor !== "0");
+
+  for (const key of tagKeys) {
+    pipe1.del(key);
+  }
+  await execPipe(pipe1);
+
+  // 3. Walk every job hash and rebuild indexes
+  let jobsScanned = 0;
+  let orphanEntries = 0;
+  const statusCounts: Record<string, number> = {};
+  const tagCounts: Record<string, number> = {};
+
+  for (const boardId of boardIds) {
+    const jobIds = await r.smembers(K.boardJobsIdx(boardId));
+
+    const pipe2 = r.pipeline();
+    for (const jobId of jobIds) {
+      const data = await r.hgetall(K.job(boardId, jobId));
+      if (!data.job_id) {
+        // Orphan index entry — job hash doesn't exist
+        pipe2.srem(K.boardJobsIdx(boardId), jobId);
+        orphanEntries++;
+        continue;
+      }
+
+      jobsScanned++;
+      const ck = `${boardId}:${jobId}`;
+      const status = data.status || "discovered";
+
+      // Rebuild status index
+      pipe2.sadd(K.jobStatusIdx(status), ck);
+      statusCounts[status] = (statusCounts[status] || 0) + 1;
+
+      // Rebuild tag indexes
+      if (data.tags) {
+        for (const tag of data.tags.split(",")) {
+          if (tag) {
+            pipe2.sadd(K.tagIdx(tag), ck);
+            tagCounts[tag] = (tagCounts[tag] || 0) + 1;
+          }
+        }
+      }
+    }
+    await execPipe(pipe2);
+  }
+
+  return {
+    jobs_scanned: jobsScanned,
+    status_index_rebuilt: statusCounts,
+    tag_index_rebuilt: tagCounts,
+    orphan_index_entries_removed: orphanEntries,
+  };
+}
+
 /* ══════════════════════ Users ══════════════════════ */
 
 export async function upsertUser(

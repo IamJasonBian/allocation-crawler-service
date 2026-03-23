@@ -13,6 +13,7 @@ import {
   updateRun,
   listRuns,
   checkApplied,
+  reconcileIndexes,
 } from "../../src/lib/entities.js";
 import { crawlBoard } from "../../src/lib/fetchers.js";
 import type { Job, Run, RunStatus, JobStatus } from "../../src/lib/types.js";
@@ -277,7 +278,12 @@ async function handleAction(r: any, body: any) {
     return json({ message: "Crawl complete", total_new: totalNew, total_updated: totalUpdated, boards: summary });
   }
 
-  return json({ error: "action must be one of: run, notify, cleanup, retrieve, check, crawl" }, 400);
+  if (action === "reconcile") {
+    const result = await reconcileIndexes(r);
+    return json({ message: "Index reconciliation complete", ...result });
+  }
+
+  return json({ error: "action must be one of: run, notify, cleanup, retrieve, check, crawl, reconcile" }, 400);
 }
 
 function json(data: unknown, status = 200) {
