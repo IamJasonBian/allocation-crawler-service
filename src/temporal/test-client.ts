@@ -12,7 +12,7 @@
 
 import { Client, Connection } from "@temporalio/client";
 import { applyToJobWorkflow, agentCompletedSignal } from "./workflows.js";
-import { APPLY_TASK_QUEUE } from "./worker.js";
+import { APPLY_TASK_QUEUE } from "./constants.js";
 import type {
   ApplyContext,
   AgentCompletedPayload,

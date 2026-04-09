@@ -17,10 +17,9 @@ import { fileURLToPath } from "url";
 import path from "path";
 import { NativeConnection, Worker } from "@temporalio/worker";
 import * as activities from "./activities.js";
+import { APPLY_TASK_QUEUE } from "./constants.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-
-export const APPLY_TASK_QUEUE = "apply";
 
 async function run() {
   const address = process.env.TEMPORAL_ADDRESS ?? "localhost:7233";
