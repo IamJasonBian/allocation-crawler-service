@@ -7,15 +7,22 @@
   },
   "scripts": {
     "dev": "netlify dev",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "worker": "tsx src/temporal/worker.ts",
+    "test-apply": "tsx src/temporal/test-client.ts"
   },
   "dependencies": {
     "@netlify/blobs": "^10.7.0",
     "@netlify/functions": "^3.0.0",
+    "@temporalio/activity": "^1.15.0",
+    "@temporalio/client": "^1.15.0",
+    "@temporalio/worker": "^1.15.0",
+    "@temporalio/workflow": "^1.15.0",
     "ioredis": "^5.4.0"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
+    "tsx": "^4.21.0",
     "typescript": "^5.4.0"
   }
 }
