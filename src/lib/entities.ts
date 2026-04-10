@@ -27,6 +27,7 @@ const K = {
   applyLock: (board: string, jobId: string) => `lock:apply:${board}:${jobId}`,
   user: (id: string) => `user:${id}`,
   usersIdx: () => "idx:users",
+  userEmailIdx: (email: string) => `idx:user_email:${email}`,
   crawl: (crawlId: string) => `crawl_exec:${crawlId}`,
   crawlsAll: () => "idx:crawls",
 };
@@ -371,7 +372,7 @@ const APPLICABLE_STATUSES = new Set<JobStatus>(["discovered", "queued"]);
  */
 export async function createRun(
   r: Redis,
-  run: Pick<Run, "run_id" | "job_id" | "board">,
+  run: Pick<Run, "run_id" | "job_id" | "board"> & { user_id?: string },
   artifacts?: RunArtifacts,
 ): Promise<{ run: Run } | { error: string; code: number }> {
   const lockKey = K.applyLock(run.board, run.job_id);
@@ -393,7 +394,10 @@ export async function createRun(
 
   const now = new Date().toISOString();
   const full: Run = {
-    ...run,
+    run_id: run.run_id,
+    job_id: run.job_id,
+    board: run.board,
+    ...(run.user_id ? { user_id: run.user_id } : {}),
     status: "pending",
     started_at: now,
     completed_at: null,
@@ -468,7 +472,10 @@ export async function updateRun(
     const hasActiveRun = siblingRuns.some(
       (sr) => sr.run_id !== runId && (sr.status === "pending" || sr.status === "submitted")
     );
-    if (!hasActiveRun) {
+    // Only revert to "discovered" if the job hasn't already been applied.
+    // A prior successful run may have set "applied" — don't overwrite that.
+    const currentJob = await getJob(r, board, jobId);
+    if (!hasActiveRun && currentJob?.status !== "applied") {
       await updateJobStatus(r, board, jobId, "discovered");
     }
     await r.del(lockKey);
@@ -483,6 +490,7 @@ function runToRedis(run: Run): Record<string, string> {
     run_id: run.run_id,
     job_id: run.job_id,
     board: run.board,
+    user_id: run.user_id || "",
     status: run.status,
     started_at: run.started_at,
     completed_at: run.completed_at || "",
@@ -497,6 +505,7 @@ function parseRunHash(data: Record<string, string>): Run | null {
     run_id: data.run_id,
     job_id: data.job_id,
     board: data.board,
+    ...(data.user_id ? { user_id: data.user_id } : {}),
     status: data.status as RunStatus,
     started_at: data.started_at,
     completed_at: data.completed_at || null,
@@ -666,6 +675,9 @@ export async function getUser(r: Redis, id: string): Promise<User | null> {
   if (!data.id) return null;
   return {
     id: data.id,
+    ...(data.email ? { email: data.email } : {}),
+    ...(data.google_sub ? { google_sub: data.google_sub } : {}),
+    ...(data.display_name ? { display_name: data.display_name } : {}),
     resumes: JSON.parse(data.resumes || "[]"),
     answers: JSON.parse(data.answers || "{}"),
     tags: JSON.parse(data.tags || "[]"),
@@ -677,6 +689,30 @@ export async function listUsers(r: Redis): Promise<User[]> {
   const ids = await r.smembers(K.usersIdx());
   const users = await Promise.all(ids.map((id) => getUser(r, id)));
   return users.filter((u): u is User => u !== null);
+}
+
+/** Look up a user by their Google email via the email index. */
+export async function getUserByEmail(r: Redis, email: string): Promise<User | null> {
+  const userId = await r.get(K.userEmailIdx(email));
+  if (!userId) return null;
+  return getUser(r, userId);
+}
+
+/** Link a Google identity to an existing user and create the email index entry. */
+export async function linkUserEmail(
+  r: Redis,
+  userId: string,
+  email: string,
+  googleSub: string,
+  displayName?: string,
+): Promise<void> {
+  const fields: Record<string, string> = {
+    email,
+    google_sub: googleSub,
+  };
+  if (displayName) fields.display_name = displayName;
+  await r.hset(K.user(userId), fields);
+  await r.set(K.userEmailIdx(email), userId);
 }
 
 /* ══════════════════════ Crawls ══════════════════════ */

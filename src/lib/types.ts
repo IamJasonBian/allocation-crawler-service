@@ -84,6 +84,7 @@ export interface Run {
   run_id: string;
   job_id: string;
   board: string;
+  user_id?: string;          // authenticated user who authorized this application
   status: RunStatus;
   started_at: string;
   completed_at: string | null;
@@ -103,6 +104,9 @@ export interface ResumeVariant {
 
 export interface User {
   id: string;
+  email?: string;                    // Google email — set after first OAuth login
+  google_sub?: string;               // Google subject ID for identity linking
+  display_name?: string;             // from Google profile
   resumes: ResumeVariant[];
   answers: Record<string, string>;   // default form answers (e.g. visa, yoe)
   tags: string[];                    // interest tags — used to filter jobs

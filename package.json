@@ -12,7 +12,8 @@
   "dependencies": {
     "@netlify/blobs": "^10.7.0",
     "@netlify/functions": "^3.0.0",
-    "ioredis": "^5.4.0"
+    "ioredis": "^5.4.0",
+    "jose": "^6.2.2"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

@@ -25,3 +25,18 @@
   from = "/api/crawler/docs"
   to = "/.netlify/functions/crawler-swagger"
   status = 200
+
+[[redirects]]
+  from = "/api/auth/*"
+  to = "/.netlify/functions/auth-google"
+  status = 200
+
+[[redirects]]
+  from = "/api/mcp"
+  to = "/.netlify/functions/mcp"
+  status = 200
+
+[[redirects]]
+  from = "/.well-known/oauth-authorization-server"
+  to = "/.netlify/functions/well-known-oauth"
+  status = 200
