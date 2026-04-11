@@ -1,0 +1,44 @@
+services:
+  - type: web
+    name: accra
+    runtime: node
+    plan: starter
+    region: oregon
+    rootDir: accra
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /health
+    autoDeploy: true
+    buildFilter:
+      paths:
+        - accra/**
+      ignoredPaths:
+        - accra/scripts/**
+        - accra/README.md
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: REDIS_HOST
+        sync: false
+      - key: REDIS_PORT
+        sync: false
+      - key: REDIS_PASSWORD
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: OAUTH_REDIRECT_URI
+        sync: false
+      - key: REQUIRE_AUTH
+        sync: false
+      - key: SLACK_WEBHOOK_URL
+        sync: false
+      - key: DATA_DIR
+        value: /data
+    disk:
+      name: accra-data
+      mountPath: /data
+      sizeGB: 1
