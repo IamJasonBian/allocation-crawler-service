@@ -1,0 +1,75 @@
+name: Deploy Healthcheck
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+jobs:
+  healthcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wait for Netlify deploy
+        run: sleep 30
+
+      - name: Heartbeat - Swagger docs
+        run: |
+          status=$(curl -s -o /dev/null -w "%{http_code}" "$API_URL/api/crawler/docs")
+          echo "GET /api/crawler/docs → $status"
+          [ "$status" = "200" ] || exit 1
+        env:
+          API_URL: ${{ secrets.API_URL }}
+
+      - name: Heartbeat - Boards
+        run: |
+          status=$(curl -s -o /dev/null -w "%{http_code}" "$API_URL/api/crawler/boards")
+          echo "GET /api/crawler/boards → $status"
+          [ "$status" = "200" ] || exit 1
+        env:
+          API_URL: ${{ secrets.API_URL }}
+
+      - name: Heartbeat - Jobs
+        run: |
+          status=$(curl -s -o /dev/null -w "%{http_code}" "$API_URL/api/crawler/jobs")
+          echo "GET /api/crawler/jobs → $status"
+          [ "$status" = "200" ] || exit 1
+        env:
+          API_URL: ${{ secrets.API_URL }}
+
+      - name: Heartbeat - Users
+        run: |
+          status=$(curl -s -o /dev/null -w "%{http_code}" "$API_URL/api/crawler/users")
+          echo "GET /api/crawler/users → $status"
+          [ "$status" = "200" ] || exit 1
+        env:
+          API_URL: ${{ secrets.API_URL }}
+
+      - name: Heartbeat - OAuth metadata
+        run: |
+          status=$(curl -s -o /dev/null -w "%{http_code}" "$API_URL/.well-known/oauth-authorization-server")
+          echo "GET /.well-known/oauth-authorization-server → $status"
+          [ "$status" = "200" ] || exit 1
+        env:
+          API_URL: ${{ secrets.API_URL }}
+
+      - name: Heartbeat - Auth (expects 401 without token)
+        run: |
+          status=$(curl -s -o /dev/null -w "%{http_code}" "$API_URL/api/auth/me")
+          echo "GET /api/auth/me → $status"
+          [ "$status" = "401" ] || exit 1
+        env:
+          API_URL: ${{ secrets.API_URL }}
+
+      - name: Heartbeat - MCP
+        run: |
+          status=$(curl -s -X POST \
+            -H "Content-Type: application/json" \
+            -d '{"jsonrpc":"2.0","method":"initialize","id":1,"params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"healthcheck","version":"0.1"}}}' \
+            -o /dev/null -w "%{http_code}" "$API_URL/api/mcp")
+          echo "POST /api/mcp (initialize) → $status"
+          [ "$status" = "200" ] || exit 1
+        env:
+          API_URL: ${{ secrets.API_URL }}
+
+      - name: Summary
+        run: echo "✅ All 7 endpoints healthy"
