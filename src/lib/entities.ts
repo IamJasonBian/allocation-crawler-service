@@ -24,6 +24,7 @@ const K = {
   run: (runId: string) => `run:${runId}`,
   jobRunsIdx: (jobId: string) => `idx:job_runs:${jobId}`,
   runsAll: () => "idx:runs",
+  userRunsIdx: (userId: string) => `idx:user_runs:${userId}`,
   applyLock: (board: string, jobId: string) => `lock:apply:${board}:${jobId}`,
   user: (id: string) => `user:${id}`,
   usersIdx: () => "idx:users",
@@ -408,6 +409,9 @@ export async function createRun(
   pipe.hset(K.run(run.run_id), runToRedis(full));
   pipe.sadd(K.jobRunsIdx(run.job_id), run.run_id);
   pipe.sadd(K.runsAll(), run.run_id);
+  if (run.user_id) {
+    pipe.sadd(K.userRunsIdx(run.user_id), run.run_id);
+  }
   await execPipe(pipe);
 
   if (job.status === "discovered") {
@@ -519,6 +523,17 @@ export async function listRuns(r: Redis, jobId?: string): Promise<Run[]> {
     ? await r.smembers(K.jobRunsIdx(jobId))
     : await r.smembers(K.runsAll());
 
+  const runs = await Promise.all(
+    runIds.map(async (rid) => {
+      const data = await r.hgetall(K.run(rid));
+      return parseRunHash(data);
+    })
+  );
+  return runs.filter((r): r is Run => r !== null);
+}
+
+export async function listRunsForUser(r: Redis, userId: string): Promise<Run[]> {
+  const runIds = await r.smembers(K.userRunsIdx(userId));
   const runs = await Promise.all(
     runIds.map(async (rid) => {
       const data = await r.hgetall(K.run(rid));

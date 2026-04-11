@@ -12,6 +12,7 @@ import {
   createRun,
   updateRun,
   listRuns,
+  listRunsForUser,
   checkApplied,
   reconcileIndexes,
 } from "../../src/lib/entities.js";
@@ -49,7 +50,16 @@ export default async (req: Request) => {
     if (req.method === "GET") {
       const runsFor = url.searchParams.get("runs_for");
       if (runsFor !== null) {
-        const runs = await listRuns(r, runsFor || undefined);
+        const userFilter = url.searchParams.get("user") || undefined;
+        let runs;
+        if (userFilter) {
+          runs = await listRunsForUser(r, userFilter);
+          if (runsFor) {
+            runs = runs.filter((run) => run.job_id === runsFor);
+          }
+        } else {
+          runs = await listRuns(r, runsFor || undefined);
+        }
         return json({ count: runs.length, runs });
       }
 
@@ -153,7 +163,7 @@ async function handleAction(r: any, body: any) {
     }
     const result = await createRun(
       r,
-      { run_id: body.run_id, job_id: body.job_id, board: body.board },
+      { run_id: body.run_id, job_id: body.job_id, board: body.board, ...(body.user_id ? { user_id: body.user_id } : {}) },
       body.artifacts,
     );
     if ("error" in result) {
