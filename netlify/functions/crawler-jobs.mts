@@ -1,4 +1,3 @@
-import type { Config } from "@netlify/functions";
 import { getRedis, disconnectRedis } from "../../src/lib/redis.js";
 import {
   addJob,
@@ -297,7 +296,3 @@ function json(data: unknown, status = 200) {
   });
 }
 
-export const config: Config = {
-  path: "/api/crawler/jobs",
-  method: ["GET", "POST", "PATCH", "DELETE"],
-};

@@ -1,8 +1,7 @@
-import type { Config } from "@netlify/functions";
-import { getStore } from "@netlify/blobs";
 import { getRedis, disconnectRedis } from "../../src/lib/redis.js";
 import { upsertUser, getUser, listUsers } from "../../src/lib/entities.js";
 import { optionalAuth } from "../../src/lib/auth.js";
+import { getStore } from "../../src/lib/storage.js";
 
 /**
  * /api/crawler/users
@@ -120,7 +119,3 @@ function json(data: unknown, status = 200) {
   });
 }
 
-export const config: Config = {
-  path: "/api/crawler/users",
-  method: ["GET", "POST"],
-};

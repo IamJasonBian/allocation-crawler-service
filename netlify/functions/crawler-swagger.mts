@@ -1,4 +1,3 @@
-import type { Config } from "@netlify/functions";
 
 const spec = {
   openapi: "3.0.3",
@@ -467,6 +466,3 @@ export default async (req: Request) => {
   });
 };
 
-export const config: Config = {
-  path: "/api/crawler/docs",
-};

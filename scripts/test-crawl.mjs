@@ -13,7 +13,7 @@ import { readFileSync } from "fs";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 
-const API_URL = process.env.API_URL || "https://allocation-crawler-service.netlify.app";
+const API_URL = process.env.API_URL || "http://localhost:3000";
 const PUSH = process.argv.includes("--push");
 const SEED = process.argv.includes("--seed");
 

@@ -1,4 +1,3 @@
-import type { Config } from "@netlify/functions";
 import { getRedis, disconnectRedis } from "../../src/lib/redis.js";
 import { authenticateRequest } from "../../src/lib/auth.js";
 import { tools, handleToolCall } from "../../src/lib/mcp-tools.js";
@@ -104,7 +103,3 @@ function json(data: unknown, status = 200) {
   });
 }
 
-export const config: Config = {
-  path: "/api/mcp",
-  method: ["POST"],
-};

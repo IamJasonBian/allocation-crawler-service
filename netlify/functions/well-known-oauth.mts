@@ -1,5 +1,3 @@
-import type { Config } from "@netlify/functions";
-
 /**
  * /.well-known/oauth-authorization-server
  *
@@ -31,7 +29,3 @@ export default async (req: Request) => {
   );
 };
 
-export const config: Config = {
-  path: "/.well-known/oauth-authorization-server",
-  method: ["GET"],
-};

@@ -23,10 +23,10 @@
  *   --days <n>      For expire-missing: days threshold (default 7)
  *
  * Environment:
- *   API_URL         Base URL (default: https://allocation-crawler-service.netlify.app)
+ *   API_URL         Base URL (default: http://localhost:3000)
  */
 
-const API_URL = process.env.API_URL || "https://allocation-crawler-service.netlify.app";
+const API_URL = process.env.API_URL || "http://localhost:3000";
 const args = process.argv.slice(2);
 const command = args[0];
 const DRY_RUN = !args.includes("--apply");
