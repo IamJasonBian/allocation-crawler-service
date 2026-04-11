@@ -2,6 +2,7 @@ import type { Config } from "@netlify/functions";
 import { getStore } from "@netlify/blobs";
 import { getRedis, disconnectRedis } from "../../src/lib/redis.js";
 import { upsertUser, getUser, listUsers } from "../../src/lib/entities.js";
+import { optionalAuth } from "../../src/lib/auth.js";
 
 /**
  * /api/crawler/users
@@ -16,6 +17,9 @@ export default async (req: Request) => {
   const r = getRedis();
 
   try {
+    const authResult = await optionalAuth(req);
+    if ("error" in authResult) return authResult.error;
+
     const url = new URL(req.url);
 
     if (req.method === "GET") {

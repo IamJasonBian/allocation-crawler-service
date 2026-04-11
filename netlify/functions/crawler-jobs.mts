@@ -16,6 +16,7 @@ import {
   reconcileIndexes,
 } from "../../src/lib/entities.js";
 import { crawlBoard } from "../../src/lib/fetchers.js";
+import { optionalAuth } from "../../src/lib/auth.js";
 import type { Job, Run, RunStatus, JobStatus } from "../../src/lib/types.js";
 
 /**
@@ -39,6 +40,9 @@ export default async (req: Request) => {
   const r = getRedis();
 
   try {
+    const authResult = await optionalAuth(req);
+    if ("error" in authResult) return authResult.error;
+
     const url = new URL(req.url);
 
     /* ── GET ── */
