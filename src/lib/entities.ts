@@ -1,5 +1,5 @@
 import type Redis from "ioredis";
-import type { ATSType, Board, Job, JobStatus, Run, RunStatus, RunArtifacts, User, ResumeVariant, Crawl, CrawlStats, FetchedJob } from "./types.js";
+import type { ATSType, Board, Company, Job, JobStatus, Run, RunStatus, RunArtifacts, User, ResumeVariant, Crawl, CrawlStats, FetchedJob } from "./types.js";
 import { extractTags } from "./tags.js";
 import { createHash } from "crypto";
 
@@ -30,6 +30,8 @@ const K = {
   userEmailIdx: (email: string) => `idx:user_email:${email}`,
   crawl: (crawlId: string) => `crawl_exec:${crawlId}`,
   crawlsAll: () => "idx:crawls",
+  company: (id: string) => `company:${id}`,
+  companiesIdx: () => "idx:companies",
 };
 
 export { K };
@@ -98,6 +100,78 @@ function parseBoardHash(data: Record<string, string>): Board {
     ats: (data.ats || "greenhouse") as ATSType,
     career_page_url: data.career_page_url || "",
     created_at: data.created_at,
+  };
+}
+
+/* ══════════════════════ Companies (discovery / marketing slug) ══════════════════════ */
+
+export async function upsertCompany(
+  r: Redis,
+  id: string,
+  marketing_slug: string,
+  name: string,
+  board_id = "",
+): Promise<Company> {
+  const now = new Date().toISOString();
+  const existing = await r.hgetall(K.company(id));
+  const created_at = existing.created_at || now;
+  const company: Company = {
+    id,
+    marketing_slug,
+    name: name || id,
+    board_id: board_id || "",
+    created_at,
+    updated_at: now,
+  };
+  const pipe = r.pipeline();
+  pipe.hset(K.company(id), {
+    id: company.id,
+    marketing_slug: company.marketing_slug,
+    name: company.name,
+    board_id: company.board_id,
+    created_at: company.created_at,
+    updated_at: company.updated_at,
+  });
+  pipe.sadd(K.companiesIdx(), id);
+  await execPipe(pipe);
+  return company;
+}
+
+export async function getCompany(r: Redis, id: string): Promise<Company | null> {
+  const data = await r.hgetall(K.company(id));
+  return data.id ? parseCompanyHash(data) : null;
+}
+
+export async function listCompanies(r: Redis): Promise<Company[]> {
+  const ids = await r.smembers(K.companiesIdx());
+  if (ids.length === 0) return [];
+  const companies = await Promise.all(
+    ids.map(async (i) => {
+      const data = await r.hgetall(K.company(i));
+      return data.id ? parseCompanyHash(data) : null;
+    })
+  );
+  return companies.filter((c): c is Company => c !== null);
+}
+
+export async function removeCompany(r: Redis, id: string): Promise<boolean> {
+  const ex = await r.exists(K.company(id));
+  if (!ex) return false;
+  const pipe = r.pipeline();
+  pipe.del(K.company(id));
+  pipe.srem(K.companiesIdx(), id);
+  await execPipe(pipe);
+  return true;
+}
+
+function parseCompanyHash(data: Record<string, string>): Company {
+  return {
+    id: data.id,
+    marketing_slug: data.marketing_slug || "",
+    name: data.name || data.id,
+    board_id: data.board_id || "",
+    created_at: data.created_at,
+    updated_at: data.updated_at,
   };
 }
 

@@ -1,0 +1,45 @@
+# Job Discovery — frontier expansion from company **marketing slugs** (see GET/PUT /api/crawler/companies).
+#
+# Pipeline intent: for each stored slug we will run a **depth-1** job discovery pass on the
+# public job-board / careers surfaces rooted at that company token (e.g. Greenhouse
+# `https://job-boards.greenhouse.io/{marketing_slug}`): seed at depth 0, follow
+# vetted same-host / allowlisted links once (depth 1) to collect listing and apply URLs
+# for ingestion. (Depth-0 ATS API ingest remains in Crawl Jobs — see `crawl.yml`.)
+#
+# The scheduled crawl workflow that pulls jobs from vendor APIs is:
+#   https://github.com/IamJasonBian/allocation-crawler-service/blob/main/.github/workflows/crawl.yml
+#
+# This workflow is a dedicated hook for discovery-oriented automation (ops or future
+# `scripts/job-discovery.mjs`); it does not replace the board crawl.
+#
+name: Job Discovery
+
+on:
+  schedule:
+    - cron: "15 1 * * 0"  # weekly — align with your ops; optional
+  workflow_dispatch: {}
+
+jobs:
+  discovery:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify companies API
+        # Smoke-check that the service exposes /companies (requires API_URL + optional auth).
+        # Replace with: node scripts/job-discovery.mjs  when the depth-1 crawl script lands.
+        run: |
+          set -e
+          : "${API_URL?Set API_URL secret to production crawler base (e.g. https://...netlify.app)}"
+          code=$(curl -sS -o /tmp/c.json -w "%{http_code}" \
+            -H "Accept: application/json" \
+            "$API_URL/api/crawler/companies" || true)
+          echo "GET /api/crawler/companies => HTTP $code"
+          if [ "$code" = "200" ] || [ "$code" = "401" ] || [ "$code" = "403" ]; then
+            head -c 200 /tmp/c.json || true; echo
+          else
+            echo "Unexpected status from companies endpoint"
+            exit 1
+          fi
+        env:
+          API_URL: ${{ secrets.API_URL }}

@@ -9,6 +9,8 @@
  *   run:{run_id}                    → Run hash
  *   user:{id}                       → User hash
  *   crawl:{crawl_id}                → Crawl hash
+ *   company:{id}                    → Company hash (discovery metadata)
+ *   idx:companies                  → Set of company IDs
  *   idx:boards                      → Set of board IDs
  *   idx:board_jobs:{board}          → Set of job_ids for a board
  *   idx:job_status:{status}         → Set of composite keys board:job_id
@@ -28,6 +30,22 @@ export interface Board {
   ats: ATSType;            // ATS platform
   career_page_url: string; // public careers page
   created_at: string;      // ISO timestamp
+}
+
+/* ══════════════════════ Company (discovery) ══════════════════════
+ *
+ * Separate from Board: a **company** row stores the *marketing* slug (and optional
+ * link to a registered `board_id`) used when expanding the job-discovery frontier
+ * (e.g. `https://job-boards.greenhouse.io/{marketing_slug}`), which may or may
+ * not equal the ATS API board token in `Board.id` for a given org.
+ */
+export interface Company {
+  id: string;                 // primary key in Redis (e.g. same as your internal company id)
+  marketing_slug: string;    // public careers-board slug (Greenhouse, etc.) for outbound discovery
+  name: string;              // display name
+  board_id: string;          // registered board id when 1:1; empty string if not linked yet
+  created_at: string;        // ISO
+  updated_at: string;        // ISO
 }
 
 /* ══════════════════════ Job ══════════════════════ */

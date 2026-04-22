@@ -28,6 +28,14 @@ jobs:
         env:
           API_URL: ${{ secrets.API_URL }}
 
+      - name: Heartbeat - Companies
+        run: |
+          status=$(curl -s -o /dev/null -w "%{http_code}" "$API_URL/api/crawler/companies")
+          echo "GET /api/crawler/companies → $status"
+          [ "$status" = "200" ] || [ "$status" = "401" ] || [ "$status" = "403" ] || exit 1
+        env:
+          API_URL: ${{ secrets.API_URL }}
+
       - name: Heartbeat - Jobs
         run: |
           status=$(curl -s -o /dev/null -w "%{http_code}" "$API_URL/api/crawler/jobs")
@@ -72,4 +80,4 @@ jobs:
           API_URL: ${{ secrets.API_URL }}
 
       - name: Summary
-        run: echo "✅ All 7 endpoints healthy"
+        run: echo "✅ All critical endpoints healthy"

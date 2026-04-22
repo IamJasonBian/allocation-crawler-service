@@ -12,6 +12,11 @@
   status = 200
 
 [[redirects]]
+  from = "/api/crawler/companies"
+  to = "/.netlify/functions/crawler-companies"
+  status = 200
+
+[[redirects]]
   from = "/api/crawler/jobs"
   to = "/.netlify/functions/crawler-jobs"
   status = 200

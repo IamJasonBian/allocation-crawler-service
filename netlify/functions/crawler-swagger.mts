@@ -4,8 +4,10 @@ const spec = {
   openapi: "3.0.3",
   info: {
     title: "Allocation Crawler Service",
-    version: "2.0.0",
-    description: "Unified API for job discovery, application tracking, and user management across the allocation pipeline.",
+    version: "2.1.0",
+    description:
+      "Unified API for job discovery, application tracking, and user management across the allocation pipeline. " +
+      "Company records hold the **marketing slug** used for outbound frontier expansion (see /companies).",
   },
   servers: [{ url: "/api/crawler" }],
   paths: {
@@ -40,6 +42,53 @@ const spec = {
         responses: {
           "200": { description: "Board removed" },
           "404": { description: "Board not found" },
+        },
+      },
+    },
+    "/companies": {
+      get: {
+        summary: "List companies or get one by id",
+        description:
+          "Companies are discovery metadata: the **marketing_slug** is the public careers-board identifier " +
+          "(e.g. Greenhouse `job-boards.greenhouse.io/{marketing_slug}`) used to seed breadth-first job discovery. " +
+          "It may match `Board.id` when the board token equals the vendor slug, but can differ when the outbound URL uses a different segment. " +
+          "Optional **board_id** links to a registered board when present.",
+        parameters: [
+          { name: "id", in: "query", schema: { type: "string" }, description: "Return a single company by id" },
+        ],
+        responses: {
+          "200": {
+            description: "Company list or single company",
+            content: { "application/json": { schema: { $ref: "#/components/schemas/CompanyListOrOne" } } },
+          },
+          "404": { description: "Company not found (when id is set)" },
+        },
+      },
+      put: {
+        summary: "Upsert company (discovery record)",
+        description:
+          "Create or update a company. **marketing_slug** is the likely outbound marketing slug for that employer " +
+          "(the path segment used on public job-board / careers surfaces). Use it as the frontier key for automated " +
+          "discovery (e.g. depth-1 crawl of listing pages derived from this slug).",
+        requestBody: {
+          required: true,
+          content: { "application/json": { schema: { $ref: "#/components/schemas/CompanyInput" } } },
+        },
+        responses: {
+          "200": { description: "Company saved", content: { "application/json": { schema: { $ref: "#/components/schemas/Company" } } } },
+          "400": { description: "Missing required fields" },
+        },
+      },
+      delete: {
+        summary: "Remove a company record",
+        description: "Deletes the discovery record only; does not remove an associated board or jobs.",
+        requestBody: {
+          required: true,
+          content: { "application/json": { schema: { type: "object", required: ["id"], properties: { id: { type: "string" } } } } },
+        },
+        responses: {
+          "200": { description: "Company removed" },
+          "404": { description: "Company not found" },
         },
       },
     },
@@ -301,6 +350,56 @@ const spec = {
           count: { type: "integer" },
           boards: { type: "array", items: { $ref: "#/components/schemas/Board" } },
         },
+      },
+      Company: {
+        type: "object",
+        description:
+          "Employer row for **discovery**. `marketing_slug` is the public slug used on outbound job-board / careers URLs; " +
+          "use it to drive automated frontier expansion (e.g. Greenhouse listing roots). " +
+          "`board_id` optionally ties this company to a registered `Board` when ids align.",
+        required: ["id", "marketing_slug", "name", "board_id", "created_at", "updated_at"],
+        properties: {
+          id: { type: "string", description: "Stable company id in this API (primary key)" },
+          marketing_slug: {
+            type: "string",
+            description:
+              "Likely **outbound marketing slug** for careers discovery — e.g. the `{slug}` in " +
+              "`https://job-boards.greenhouse.io/{slug}` (Greenhouse) or the public board token. Use for discovery; may equal Board.id or not.",
+            example: "figma",
+          },
+          name: { type: "string", description: "Display name" },
+          board_id: {
+            type: "string",
+            description: "Registered board id when linked (often same as `id` or `Board.id`); empty if not registered yet",
+            example: "figma",
+          },
+          created_at: { type: "string", format: "date-time" },
+          updated_at: { type: "string", format: "date-time" },
+        },
+      },
+      CompanyInput: {
+        type: "object",
+        required: ["id", "marketing_slug"],
+        properties: {
+          id: { type: "string", example: "figma" },
+          marketing_slug: {
+            type: "string",
+            example: "figma",
+            description: "Outward-facing board slug for job listing surfaces (see Company.marketing_slug).",
+          },
+          name: { type: "string", example: "Figma" },
+          board_id: { type: "string", example: "figma", description: "Optional link to /boards id" },
+        },
+      },
+      CompanyList: {
+        type: "object",
+        properties: {
+          count: { type: "integer" },
+          companies: { type: "array", items: { $ref: "#/components/schemas/Company" } },
+        },
+      },
+      CompanyListOrOne: {
+        oneOf: [{ $ref: "#/components/schemas/Company" }, { $ref: "#/components/schemas/CompanyList" }],
       },
       FetchedJob: {
         type: "object",
