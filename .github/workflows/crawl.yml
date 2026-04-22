@@ -1,3 +1,6 @@
+# Crawl jobs from registered **boards** via vendor ATS HTTP APIs (depth-0 ingest).
+# Broader “marketing slug” / HTML frontier expansion is tracked under Job Discovery:
+#   .github/workflows/job-discovery.yml
 name: Crawl Jobs
 
 on:
