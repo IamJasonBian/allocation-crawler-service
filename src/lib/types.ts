@@ -10,13 +10,17 @@
  *   user:{id}                       → User hash
  *   crawl:{crawl_id}                → Crawl hash
  *   company:{id}                    → Company hash (discovery metadata)
- *   idx:companies                  → Set of company IDs
+ *   interview:{user}:{board}:{job}  → InterviewStage hash (post-application funnel)
+ *   idx:companies                   → Set of company IDs
  *   idx:boards                      → Set of board IDs
  *   idx:board_jobs:{board}          → Set of job_ids for a board
  *   idx:job_status:{status}         → Set of composite keys board:job_id
  *   idx:tag:{tag}                   → Set of composite keys board:job_id
  *   idx:job_runs:{job_id}           → Set of run_ids for a job
  *   idx:runs                        → Set of all run_ids
+ *   idx:interviews                          → Set of all interview composite ids
+ *   idx:interview_user:{user_id}            → Set of composite ids for a user
+ *   idx:interview_status:{status}           → Set of composite ids in a status
  *   lock:apply:{board}:{job_id}     → SETNX lock (300s TTL)
  */
 
@@ -108,6 +112,56 @@ export interface Run {
   completed_at: string | null;
   error: string | null;
   artifacts: RunArtifacts | null;
+}
+
+/* ══════════════════════ Interview Stage ══════════════════════
+ *
+ * Post-application funnel state per (user, board, job). Distinct from
+ * JobStatus — that tracks whether the *application* was submitted.
+ * Once a job reaches `applied`, the candidate's downstream progression
+ * (recruiter screen, coding rounds, etc.) lives here.
+ *
+ * Companion to allocation-agent-workflow-service's `CallbackSignal`
+ * (callback | screener | rejection | offer), which is an event log fed
+ * into agent training. This entity is the *state machine* the crawler
+ * exposes through its API; the workflow-service can map its event
+ * stream onto these statuses on ingest.
+ *
+ * `Rejected` and `Withdrawn` are terminal — the workflow does not
+ * transition out of them. Re-applying creates a new InterviewStage row
+ * via DELETE + POST.
+ */
+
+export type InterviewStatus =
+  | "Applied"
+  | "Screening"
+  | "CodingRounds"
+  | "OtherRounds"
+  | "FinalRound"
+  | "Offer"
+  | "Rejected"
+  | "Withdrawn";
+
+export const INTERVIEW_STATUSES: InterviewStatus[] = [
+  "Applied",
+  "Screening",
+  "CodingRounds",
+  "OtherRounds",
+  "FinalRound",
+  "Offer",
+  "Rejected",
+  "Withdrawn",
+];
+
+export interface InterviewStage {
+  id: string;            // composite "${user_id}:${board}:${job_id}"
+  user_id: string;
+  board: string;
+  job_id: string;
+  status: InterviewStatus;
+  notes: string;         // free-form, optional context
+  created_at: string;    // ISO
+  updated_at: string;    // ISO — bumped on any status/notes change
 }
 
 /* ══════════════════════ User ══════════════════════ */

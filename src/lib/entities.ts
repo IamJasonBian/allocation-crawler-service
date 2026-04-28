@@ -1,5 +1,6 @@
 import type Redis from "ioredis";
-import type { ATSType, Board, Company, Job, JobStatus, Run, RunStatus, RunArtifacts, User, ResumeVariant, Crawl, CrawlStats, FetchedJob } from "./types.js";
+import type { ATSType, Board, Company, InterviewStage, InterviewStatus, Job, JobStatus, Run, RunStatus, RunArtifacts, User, ResumeVariant, Crawl, CrawlStats, FetchedJob } from "./types.js";
+import { INTERVIEW_STATUSES } from "./types.js";
 import { extractTags } from "./tags.js";
 import { createHash } from "crypto";
 
@@ -32,6 +33,10 @@ const K = {
   crawlsAll: () => "idx:crawls",
   company: (id: string) => `company:${id}`,
   companiesIdx: () => "idx:companies",
+  interview: (userId: string, board: string, jobId: string) => `interview:${userId}:${board}:${jobId}`,
+  interviewsIdx: () => "idx:interviews",
+  interviewUserIdx: (userId: string) => `idx:interview_user:${userId}`,
+  interviewStatusIdx: (status: string) => `idx:interview_status:${status}`,
 };
 
 export { K };
@@ -173,6 +178,187 @@ function parseCompanyHash(data: Record<string, string>): Company {
     created_at: data.created_at,
     updated_at: data.updated_at,
   };
+}
+
+/* ══════════════════════ Interview Stages ══════════════════════ */
+
+function interviewCompositeId(userId: string, board: string, jobId: string): string {
+  return `${userId}:${board}:${jobId}`;
+}
+
+function isInterviewStatus(s: string): s is InterviewStatus {
+  return (INTERVIEW_STATUSES as string[]).includes(s);
+}
+
+export function parseInterviewCompositeId(id: string): { user_id: string; board: string; job_id: string } | null {
+  const parts = id.split(":");
+  if (parts.length !== 3 || !parts[0] || !parts[1] || !parts[2]) return null;
+  return { user_id: parts[0], board: parts[1], job_id: parts[2] };
+}
+
+function parseInterviewHash(data: Record<string, string>): InterviewStage | null {
+  if (!data.id) return null;
+  return {
+    id: data.id,
+    user_id: data.user_id,
+    board: data.board,
+    job_id: data.job_id,
+    status: (data.status || "Applied") as InterviewStatus,
+    notes: data.notes || "",
+    created_at: data.created_at,
+    updated_at: data.updated_at,
+  };
+}
+
+/**
+ * Create an InterviewStage. Fails with `{ error, code: 409 }` if a row
+ * already exists for the (user, board, job) tuple — callers should PATCH
+ * instead of re-POST.
+ */
+export async function createInterviewStage(
+  r: Redis,
+  input: { user_id: string; board: string; job_id: string; status?: InterviewStatus; notes?: string },
+): Promise<{ stage: InterviewStage } | { error: string; code: number }> {
+  const status = input.status ?? "Applied";
+  if (!isInterviewStatus(status)) {
+    return { error: `Invalid status '${status}'`, code: 400 };
+  }
+
+  const id = interviewCompositeId(input.user_id, input.board, input.job_id);
+  const key = K.interview(input.user_id, input.board, input.job_id);
+  const exists = await r.exists(key);
+  if (exists) {
+    return { error: "Interview stage already exists for this (user, board, job) — use PATCH to update", code: 409 };
+  }
+
+  const now = new Date().toISOString();
+  const stage: InterviewStage = {
+    id,
+    user_id: input.user_id,
+    board: input.board,
+    job_id: input.job_id,
+    status,
+    notes: input.notes || "",
+    created_at: now,
+    updated_at: now,
+  };
+
+  const pipe = r.pipeline();
+  pipe.hset(key, {
+    id: stage.id,
+    user_id: stage.user_id,
+    board: stage.board,
+    job_id: stage.job_id,
+    status: stage.status,
+    notes: stage.notes,
+    created_at: stage.created_at,
+    updated_at: stage.updated_at,
+  });
+  pipe.sadd(K.interviewsIdx(), id);
+  pipe.sadd(K.interviewUserIdx(input.user_id), id);
+  pipe.sadd(K.interviewStatusIdx(stage.status), id);
+  await execPipe(pipe);
+
+  return { stage };
+}
+
+export async function getInterviewStage(
+  r: Redis,
+  userId: string,
+  board: string,
+  jobId: string,
+): Promise<InterviewStage | null> {
+  const data = await r.hgetall(K.interview(userId, board, jobId));
+  return parseInterviewHash(data);
+}
+
+export async function listInterviewStages(
+  r: Redis,
+  opts?: { user_id?: string; status?: InterviewStatus; board?: string },
+): Promise<InterviewStage[]> {
+  let ids: string[];
+
+  if (opts?.user_id && opts?.status) {
+    ids = await r.sinter(K.interviewUserIdx(opts.user_id), K.interviewStatusIdx(opts.status));
+  } else if (opts?.user_id) {
+    ids = await r.smembers(K.interviewUserIdx(opts.user_id));
+  } else if (opts?.status) {
+    ids = await r.smembers(K.interviewStatusIdx(opts.status));
+  } else {
+    ids = await r.smembers(K.interviewsIdx());
+  }
+
+  if (opts?.board) {
+    ids = ids.filter((id) => {
+      const parsed = parseInterviewCompositeId(id);
+      return parsed?.board === opts.board;
+    });
+  }
+
+  const stages = await Promise.all(
+    ids.map(async (id) => {
+      const parsed = parseInterviewCompositeId(id);
+      if (!parsed) return null;
+      const data = await r.hgetall(K.interview(parsed.user_id, parsed.board, parsed.job_id));
+      return parseInterviewHash(data);
+    }),
+  );
+  return stages.filter((s): s is InterviewStage => s !== null);
+}
+
+/**
+ * Patch a stage's status and/or notes. Status index is updated atomically.
+ * Returns null when the row doesn't exist.
+ */
+export async function updateInterviewStage(
+  r: Redis,
+  userId: string,
+  board: string,
+  jobId: string,
+  update: { status?: InterviewStatus; notes?: string },
+): Promise<InterviewStage | null> {
+  const key = K.interview(userId, board, jobId);
+  const data = await r.hgetall(key);
+  if (!data.id) return null;
+
+  if (update.status && !isInterviewStatus(update.status)) {
+    throw new Error(`Invalid status '${update.status}'`);
+  }
+
+  const now = new Date().toISOString();
+  const fields: Record<string, string> = { updated_at: now };
+  if (update.status) fields.status = update.status;
+  if (update.notes !== undefined) fields.notes = update.notes;
+
+  const pipe = r.pipeline();
+  pipe.hset(key, fields);
+  if (update.status && update.status !== data.status) {
+    pipe.srem(K.interviewStatusIdx(data.status), data.id);
+    pipe.sadd(K.interviewStatusIdx(update.status), data.id);
+  }
+  await execPipe(pipe);
+
+  const updated = await r.hgetall(key);
+  return parseInterviewHash(updated);
+}
+
+export async function removeInterviewStage(
+  r: Redis,
+  userId: string,
+  board: string,
+  jobId: string,
+): Promise<boolean> {
+  const key = K.interview(userId, board, jobId);
+  const data = await r.hgetall(key);
+  if (!data.id) return false;
+
+  const pipe = r.pipeline();
+  pipe.del(key);
+  pipe.srem(K.interviewsIdx(), data.id);
+  pipe.srem(K.interviewUserIdx(data.user_id), data.id);
+  pipe.srem(K.interviewStatusIdx(data.status), data.id);
+  await execPipe(pipe);
+  return true;
 }
 
 /* ══════════════════════ Jobs ══════════════════════ */
