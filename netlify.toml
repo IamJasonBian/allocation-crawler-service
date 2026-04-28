@@ -27,6 +27,11 @@
   status = 200
 
 [[redirects]]
+  from = "/api/crawler/interviews"
+  to = "/.netlify/functions/crawler-interviews"
+  status = 200
+
+[[redirects]]
   from = "/api/crawler/docs"
   to = "/.netlify/functions/crawler-swagger"
   status = 200

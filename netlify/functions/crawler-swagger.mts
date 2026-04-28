@@ -274,6 +274,85 @@ const spec = {
         },
       },
     },
+    "/interviews": {
+      get: {
+        summary: "List interview stages or get a single one",
+        description:
+          "Post-application funnel state per (user, board, job). Distinct from `Job.status`, which tracks whether " +
+          "the application itself succeeded — `InterviewStage.status` tracks downstream candidate progression " +
+          "(Screening → CodingRounds → ... → Offer/Rejected/Withdrawn). " +
+          "Pass all three of `user_id`, `board`, `job_id` to fetch a single record; otherwise filters apply.",
+        parameters: [
+          { name: "user_id", in: "query", schema: { type: "string" }, description: "Filter by user (or part of single-record key)" },
+          { name: "board", in: "query", schema: { type: "string" }, description: "Filter by board (or part of single-record key)" },
+          { name: "job_id", in: "query", schema: { type: "string" }, description: "Single-record key — must include user_id and board" },
+          { name: "status", in: "query", schema: { type: "string", enum: ["Applied", "Screening", "CodingRounds", "OtherRounds", "FinalRound", "Offer", "Rejected", "Withdrawn"] } },
+        ],
+        responses: {
+          "200": {
+            description: "Stage list or single stage",
+            content: { "application/json": { schema: { $ref: "#/components/schemas/InterviewStageListOrOne" } } },
+          },
+          "400": { description: "Invalid status filter" },
+          "404": { description: "Interview stage not found (single-record query)" },
+        },
+      },
+      post: {
+        summary: "Create an interview stage",
+        description:
+          "Initialize the funnel record for a (user, board, job) tuple. Defaults to `Applied` if status omitted. " +
+          "Returns 409 if a row already exists — use PATCH to advance.",
+        requestBody: {
+          required: true,
+          content: { "application/json": { schema: { $ref: "#/components/schemas/InterviewStageCreate" } } },
+        },
+        responses: {
+          "201": { description: "Stage created", content: { "application/json": { schema: { $ref: "#/components/schemas/InterviewStage" } } } },
+          "400": { description: "Missing required fields or invalid status" },
+          "409": { description: "Stage already exists for this (user, board, job)" },
+        },
+      },
+      patch: {
+        summary: "Update an interview stage",
+        description:
+          "Advance the funnel by setting a new status, and/or update notes. The composite key " +
+          "(`user_id`, `board`, `job_id`) selects the row. `Rejected` and `Withdrawn` are terminal — " +
+          "callers may still PATCH a row in those states (e.g. to add notes) but should not transition out " +
+          "of them; re-applying creates a new row via DELETE + POST.",
+        requestBody: {
+          required: true,
+          content: { "application/json": { schema: { $ref: "#/components/schemas/InterviewStagePatch" } } },
+        },
+        responses: {
+          "200": { description: "Stage updated", content: { "application/json": { schema: { $ref: "#/components/schemas/InterviewStage" } } } },
+          "400": { description: "Missing fields or invalid status" },
+          "404": { description: "Interview stage not found" },
+        },
+      },
+      delete: {
+        summary: "Remove an interview stage",
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["user_id", "board", "job_id"],
+                properties: {
+                  user_id: { type: "string" },
+                  board: { type: "string" },
+                  job_id: { type: "string" },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          "200": { description: "Stage removed" },
+          "404": { description: "Interview stage not found" },
+        },
+      },
+    },
     "/crawls": {
       get: {
         summary: "List crawls",
@@ -487,6 +566,63 @@ const spec = {
           answers: { type: "object", additionalProperties: { type: "string" } },
           tags: { type: "array", items: { type: "string" } },
         },
+      },
+      InterviewStatus: {
+        type: "string",
+        enum: ["Applied", "Screening", "CodingRounds", "OtherRounds", "FinalRound", "Offer", "Rejected", "Withdrawn"],
+        description:
+          "Post-application funnel state. `Rejected` and `Withdrawn` are terminal. " +
+          "Maps loosely onto allocation-agent-workflow-service's `CallbackSignal` " +
+          "(callback | screener | rejection | offer) when ingesting recruiter signals.",
+      },
+      InterviewStage: {
+        type: "object",
+        description:
+          "Per-(user, board, job) funnel record. Created on application, advanced by PATCH as the candidate progresses.",
+        required: ["id", "user_id", "board", "job_id", "status", "notes", "created_at", "updated_at"],
+        properties: {
+          id: { type: "string", description: "Composite `${user_id}:${board}:${job_id}`" },
+          user_id: { type: "string" },
+          board: { type: "string" },
+          job_id: { type: "string" },
+          status: { $ref: "#/components/schemas/InterviewStatus" },
+          notes: { type: "string", description: "Free-form context (recruiter name, scheduled dates, etc.)" },
+          created_at: { type: "string", format: "date-time" },
+          updated_at: { type: "string", format: "date-time" },
+        },
+      },
+      InterviewStageCreate: {
+        type: "object",
+        required: ["user_id", "board", "job_id"],
+        properties: {
+          user_id: { type: "string" },
+          board: { type: "string", example: "stripe" },
+          job_id: { type: "string", example: "1234567" },
+          status: { $ref: "#/components/schemas/InterviewStatus", description: "Defaults to `Applied`" },
+          notes: { type: "string" },
+        },
+      },
+      InterviewStagePatch: {
+        type: "object",
+        required: ["user_id", "board", "job_id"],
+        description: "Provide at least one of `status` or `notes`.",
+        properties: {
+          user_id: { type: "string" },
+          board: { type: "string" },
+          job_id: { type: "string" },
+          status: { $ref: "#/components/schemas/InterviewStatus" },
+          notes: { type: "string" },
+        },
+      },
+      InterviewStageList: {
+        type: "object",
+        properties: {
+          count: { type: "integer" },
+          stages: { type: "array", items: { $ref: "#/components/schemas/InterviewStage" } },
+        },
+      },
+      InterviewStageListOrOne: {
+        oneOf: [{ $ref: "#/components/schemas/InterviewStage" }, { $ref: "#/components/schemas/InterviewStageList" }],
       },
       CrawlStats: {
         type: "object",
