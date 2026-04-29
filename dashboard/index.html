@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>allocation-agent · operator dashboard</title>
+  <!-- Render API base. Override at deploy time by editing this tag, or per-browser
+       via localStorage.setItem('apiBase', 'https://your-api.onrender.com'). -->
+  <meta name="api-base" content="https://allocation-api.onrender.com" />
+  <meta name="flower-base" content="https://allocation-flower.onrender.com" />
+  <link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+  <header>
+    <div class="row">
+      <h1>allocation-agent</h1>
+      <span id="status-pill" class="pill dim">connecting…</span>
+    </div>
+    <div class="row identity">
+      <label for="mock-email">Mock identity</label>
+      <input id="mock-email" type="email" placeholder="alice@example.com" autocomplete="off" />
+      <button id="apply-identity">Apply</button>
+      <span id="me" class="muted">not authenticated</span>
+      <span class="grow"></span>
+      <a id="flower-link" target="_blank" rel="noopener">Flower&nbsp;↗</a>
+      <a id="docs-link" target="_blank" rel="noopener">API docs&nbsp;↗</a>
+    </div>
+  </header>
+
+  <main>
+    <section>
+      <h2>Queues</h2>
+      <div id="queues" class="grid"></div>
+    </section>
+
+    <section>
+      <h2>Workers</h2>
+      <div id="workers" class="grid"></div>
+    </section>
+
+    <section>
+      <h2>Recent outcomes</h2>
+      <p id="rollup" class="muted"></p>
+      <table>
+        <thead>
+          <tr><th>Candidate</th><th>Job</th><th>ATS</th><th>Status</th><th>Finished</th></tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </section>
+
+    <p id="fetched" class="muted"></p>
+  </main>
+
+  <script src="./app.js"></script>
+</body>
+</html>
