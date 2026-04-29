@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Signing you in…</title>
+  <link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+  <main style="max-width:520px; margin:5rem auto; padding:0 1rem;">
+    <h1 id="title">Signing you in…</h1>
+    <p id="msg" class="muted">Exchanging authorization code for a session.</p>
+    <pre id="err" style="display:none; background:#161b22; padding:1rem; border-radius:6px; color:#f85149; overflow:auto;"></pre>
+  </main>
+  <script>
+    (async () => {
+      const params = new URLSearchParams(location.search);
+      const code = params.get("code");
+      const error = params.get("error");
+      const ret = sessionStorage.getItem("oauthReturnTo") || "/dashboard/";
+
+      const fail = (m) => {
+        document.getElementById("title").textContent = "Sign-in failed";
+        document.getElementById("msg").textContent = "You can close this tab.";
+        const e = document.getElementById("err");
+        e.textContent = m;
+        e.style.display = "block";
+      };
+
+      if (error) return fail("OAuth error: " + error);
+      if (!code) return fail("No authorization code received.");
+
+      try {
+        const resp = await fetch("/api/auth/token", {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body: new URLSearchParams({ grant_type: "authorization_code", code }),
+        });
+        if (!resp.ok) {
+          const t = await resp.text();
+          return fail("Token exchange failed: " + resp.status + " " + t);
+        }
+        const data = await resp.json();
+        if (!data.access_token) return fail("No access_token in response.");
+
+        // Decode the JWT to extract email (HS256 — server is the only verifier;
+        // we only inspect the payload here for UX).
+        const payload = JSON.parse(atob(data.access_token.split(".")[1]));
+        localStorage.setItem("jwt", data.access_token);
+        if (payload.email) localStorage.setItem("mockEmail", payload.email);
+
+        sessionStorage.removeItem("oauthReturnTo");
+        location.replace(ret);
+      } catch (e) {
+        fail(String(e));
+      }
+    })();
+  </script>
+</body>
+</html>

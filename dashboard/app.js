@@ -21,6 +21,50 @@
   const emailInput = $("mock-email");
   emailInput.value = localStorage.getItem("mockEmail") || "";
 
+  function jwtPayload(token) {
+    try { return JSON.parse(atob(token.split(".")[1])); } catch { return null; }
+  }
+  function jwtIsLive(token) {
+    const p = jwtPayload(token);
+    return p && p.exp && p.exp * 1000 > Date.now();
+  }
+
+  function setSignedIn(on, email) {
+    $("signin-google").hidden = on;
+    $("signout").hidden = !on;
+    $("mock-fallback").hidden = on;
+    if (on && email) {
+      $("me").textContent = "Signed in as " + email;
+      $("me").className = "";
+    }
+  }
+
+  // Boot: if a fresh JWT exists, prefer it as identity.
+  const jwt = localStorage.getItem("jwt");
+  if (jwt && jwtIsLive(jwt)) {
+    const p = jwtPayload(jwt);
+    if (p && p.email) {
+      localStorage.setItem("mockEmail", p.email);
+      setSignedIn(true, p.email);
+    }
+  } else if (jwt) {
+    localStorage.removeItem("jwt"); // expired
+  }
+
+  $("signin-google").addEventListener("click", () => {
+    sessionStorage.setItem("oauthReturnTo", location.pathname);
+    const state = Math.random().toString(36).slice(2);
+    const redirectUri = location.origin + "/dashboard/auth-callback.html";
+    location.assign("/api/auth/authorize?redirect_uri=" + encodeURIComponent(redirectUri) + "&state=" + state);
+  });
+
+  $("signout").addEventListener("click", () => {
+    localStorage.removeItem("jwt");
+    localStorage.removeItem("mockEmail");
+    setSignedIn(false);
+    refresh();
+  });
+
   $("apply-identity").addEventListener("click", () => {
     const v = emailInput.value.trim();
     if (v) {
