@@ -70,6 +70,17 @@ h2 {
   cursor: pointer;
   font-size: 0.85rem;
 }
+.btn-google {
+  display: inline-flex !important;
+  align-items: center;
+  gap: 0.5rem;
+  background: #fff !important;
+  color: #1f1f1f !important;
+  border: 1px solid var(--border) !important;
+}
+.btn-google:hover { background: #f8f9fa !important; }
+#mock-fallback summary { cursor: pointer; }
+#mock-fallback[open] summary { margin-bottom: 0.3rem; }
 
 .muted { color: var(--muted); font-size: 0.8rem; }
 .dim { color: var(--dim); }
